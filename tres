@@ -1,0 +1,5064 @@
+-- ============================================================================
+-- KRONOS CLIENT UI (v4.2) — Build A Boat For Treasure (Clean + Creative Edition)
+-- Author: swiziby
+-- Features:
+--   * AFK Gold Farm (10/10 stages glide + Golden Chest + Claim) & Instant Chest TP
+--   * Walk on Water (Theme Glass River Deck + Anti-Water), Fly (F), Inf Jump, Boat Fly (V), Ctrl+Click TP
+--   * Creative Studio: Live Boat Cloner, Ghost Hologram Blueprint Preview & Auto-Build Presets
+--   * Theme-Synced Player ESP & Chams, Treasure Beam, Anti-Darkness & Fullbright
+-- ============================================================================
+
+local cloneref = cloneref or function(o) return o end
+local gethui = gethui or get_hidden_gui or get_hidden_ui or function() return game:GetService("CoreGui") end
+
+local TweenService = cloneref(game:GetService("TweenService"))
+local RunService = cloneref(game:GetService("RunService"))
+local Players = cloneref(game:GetService("Players"))
+local Lighting = cloneref(game:GetService("Lighting"))
+local UserInputService = cloneref(game:GetService("UserInputService"))
+local ContentProvider = cloneref(game:GetService("ContentProvider"))
+local SoundService = cloneref(game:GetService("SoundService"))
+local HttpService = cloneref(game:GetService("HttpService"))
+local VirtualUser = cloneref(game:GetService("VirtualUser"))
+local ReplicatedStorage = cloneref(game:GetService("ReplicatedStorage"))
+
+
+local FIRA_FACE = nil
+pcall(function()
+	FIRA_FACE = Font.fromName("FiraCode", Enum.FontWeight.Medium)
+end)
+
+local function applyMonoFont(lbl, size)
+	if FIRA_FACE then
+		pcall(function() lbl.FontFace = FIRA_FACE end)
+	else
+		lbl.Font = Enum.Font.RobotoMono
+	end
+	if size then lbl.TextSize = size end
+end
+
+-- ============================================================================
+-- 0. SINGLE-INSTANCE ANTI-DUPLICATE TERMINATOR
+-- ============================================================================
+local function terminatePreviousInstances()
+	local okG, genv = pcall(function() return getgenv and getgenv() end)
+	if okG and type(genv) == "table" and type(genv.__KRONOS_CLEANUP) == "function" then
+		pcall(genv.__KRONOS_CLEANUP)
+		genv.__KRONOS_CLEANUP = nil
+	end
+	if type(_G.__KRONOS_CLEANUP) == "function" then
+		pcall(_G.__KRONOS_CLEANUP)
+		_G.__KRONOS_CLEANUP = nil
+	end
+
+
+	local function purgeTagged(container)
+		if not container then return end
+		local okList, children = pcall(function() return container:GetChildren() end)
+		if not okList then return end
+		for _, child in ipairs(children) do
+			local isKronos = false
+			pcall(function()
+				if child:GetAttribute("KronosClientMarker") == true then
+					isKronos = true
+				end
+			end)
+			if isKronos then
+				pcall(function()
+					if child:IsA("Sound") then child:Stop() end
+					if child:IsA("BlurEffect") then child.Enabled = false end
+					child:Destroy()
+				end)
+			end
+		end
+	end
+	purgeTagged(gethui())
+	pcall(function() purgeTagged(game:GetService("CoreGui")) end)
+	purgeTagged(Lighting)
+	purgeTagged(SoundService)
+end
+
+terminatePreviousInstances()
+
+local function randName(len)
+	local chars = "0123456789abcdef"
+	local out = {}
+	for i = 1, (len or 12) do
+		local idx = math.random(1, #chars)
+		out[i] = string.sub(chars, idx, idx)
+	end
+	return table.concat(out)
+end
+
+-- ============================================================================
+-- 1. CLIENT ARCHITECTURE & JANITOR
+-- ============================================================================
+local Client = {
+	Info = {
+		Name = "KRONOS",
+		Author = "swiziby",
+		Plan = "LIFETIME",
+		Version = "4.0",
+	},
+	Alive = true,
+	Paths = {
+		Root = "KronosTyan",
+		Configs = "KronosTyan/configs",
+		Autoload = "KronosTyan/autoload.json",
+		LegacyLayout = "KronosTyan/glass_layout.json",
+	},
+	Janitor = {
+		connections = {},
+		instances = {},
+		sounds = {},
+		activeTweens = {},
+		drawings = {},
+		highlights = {},
+	},
+	Themes = {},
+	ThemeOrder = { "Lavender", "Sakura", "Moonlight", "Amethyst", "Emerald" },
+	ThemeListeners = {},
+	StateListeners = {},
+	State = nil,
+	ActiveConfigName = "Default",
+}
+
+function Client.TrackInstance(inst)
+	if inst then
+		pcall(function() inst:SetAttribute("KronosClientMarker", true) end)
+		table.insert(Client.Janitor.instances, inst)
+	end
+	return inst
+end
+
+function Client.TrackSound(snd)
+	if snd then
+		pcall(function() snd:SetAttribute("KronosClientMarker", true) end)
+		table.insert(Client.Janitor.sounds, snd)
+	end
+	return snd
+end
+
+
+function Client.TrackDrawing(d)
+	if d then
+		table.insert(Client.Janitor.drawings, d)
+	end
+	return d
+end
+
+function Client.TrackTween(tw)
+	if tw then
+		Client.Janitor.activeTweens[tw] = true
+		tw.Completed:Once(function()
+			Client.Janitor.activeTweens[tw] = nil
+			pcall(function() tw:Destroy() end)
+		end)
+		tw:Play()
+	end
+	return tw
+end
+
+function Client.Bind(sig, fn)
+	local conn
+	if STATE and STATE.connect then
+		conn = STATE.connect(sig, fn)
+	else
+		conn = sig:Connect(fn)
+	end
+	table.insert(Client.Janitor.connections, conn)
+	return conn
+end
+
+local restoreAllBabft = nil
+
+function Client.Unload()
+	if not Client.Alive then return end
+	Client.Alive = false
+
+	if restoreAllBabft then pcall(restoreAllBabft) end
+
+	for _, d in ipairs(Client.Janitor.drawings) do
+		pcall(function()
+			d.Visible = false
+			d:Remove()
+		end)
+	end
+	table.clear(Client.Janitor.drawings)
+
+	for _, hl in pairs(Client.Janitor.highlights) do
+		pcall(function() hl:Destroy() end)
+	end
+	table.clear(Client.Janitor.highlights)
+
+	for tw, _ in pairs(Client.Janitor.activeTweens) do
+		pcall(function()
+			tw:Cancel()
+			tw:Destroy()
+		end)
+	end
+	table.clear(Client.Janitor.activeTweens)
+
+	for _, conn in ipairs(Client.Janitor.connections) do
+		pcall(function() conn:Disconnect() end)
+	end
+	table.clear(Client.Janitor.connections)
+
+	for _, snd in ipairs(Client.Janitor.sounds) do
+		pcall(function()
+			snd:Stop()
+			snd:Destroy()
+		end)
+	end
+	table.clear(Client.Janitor.sounds)
+
+	for _, inst in ipairs(Client.Janitor.instances) do
+		pcall(function()
+			if inst:IsA("BlurEffect") then inst.Enabled = false end
+			inst:Destroy()
+		end)
+	end
+	table.clear(Client.Janitor.instances)
+	table.clear(Client.ThemeListeners)
+	table.clear(Client.StateListeners)
+
+	if _G.KronosClient == Client then
+		_G.KronosClient = nil
+	end
+end
+
+_G.KronosClient = Client
+_G.__KRONOS_CLEANUP = Client.Unload
+pcall(function()
+	local genv = getgenv and getgenv()
+	if type(genv) == "table" then
+		genv.__KRONOS_CLEANUP = Client.Unload
+	end
+end)
+if STATE and STATE.onCleanup then
+	STATE.onCleanup(Client.Unload)
+end
+
+-- ============================================================================
+-- 2. COLOR THEMES (5 Curated Liquid Glass Palettes)
+-- ============================================================================
+Client.Themes = {
+	Lavender = {
+		key = "Lavender",
+		name = "Lavender Silk",
+		swatch1 = Color3.fromRGB(238, 228, 255),
+		swatch2 = Color3.fromRGB(172, 134, 248),
+		swatch3 = Color3.fromRGB(92, 60, 168),
+		accent = Color3.fromRGB(170, 132, 248),
+		bright = Color3.fromRGB(228, 212, 255),
+		mid = Color3.fromRGB(194, 168, 248),
+		muted = Color3.fromRGB(142, 122, 192),
+		neon = Color3.fromRGB(184, 138, 255),
+		glassBase = Color3.fromRGB(17, 14, 27),
+		glassGradTop = Color3.fromRGB(36, 30, 56),
+		glassGradMid = Color3.fromRGB(20, 17, 32),
+		glassGradBot = Color3.fromRGB(26, 22, 42),
+		cardBg = Color3.fromRGB(24, 20, 38),
+		cardHover = Color3.fromRGB(31, 26, 49),
+		tabActiveBg = Color3.fromRGB(48, 38, 78),
+		tabIdleBg = Color3.fromRGB(26, 22, 42),
+		strokeHi = Color3.fromRGB(244, 236, 255),
+		strokeMid = Color3.fromRGB(174, 144, 238),
+		strokeDim = Color3.fromRGB(72, 58, 108),
+		pillDark = Color3.fromRGB(58, 36, 108),
+		pillMid = Color3.fromRGB(112, 68, 202),
+		pillShine = Color3.fromRGB(206, 168, 255),
+		scrollTint = Color3.fromRGB(176, 140, 248),
+	},
+	Sakura = {
+		key = "Sakura",
+		name = "Sakura Pearl",
+		swatch1 = Color3.fromRGB(255, 228, 242),
+		swatch2 = Color3.fromRGB(240, 134, 192),
+		swatch3 = Color3.fromRGB(154, 62, 118),
+		accent = Color3.fromRGB(238, 132, 192),
+		bright = Color3.fromRGB(255, 222, 242),
+		mid = Color3.fromRGB(238, 182, 214),
+		muted = Color3.fromRGB(186, 134, 166),
+		neon = Color3.fromRGB(248, 140, 202),
+		glassBase = Color3.fromRGB(25, 15, 24),
+		glassGradTop = Color3.fromRGB(52, 30, 46),
+		glassGradMid = Color3.fromRGB(28, 17, 26),
+		glassGradBot = Color3.fromRGB(38, 22, 34),
+		cardBg = Color3.fromRGB(34, 21, 32),
+		cardHover = Color3.fromRGB(44, 28, 41),
+		tabActiveBg = Color3.fromRGB(74, 38, 64),
+		tabIdleBg = Color3.fromRGB(36, 22, 34),
+		strokeHi = Color3.fromRGB(255, 232, 246),
+		strokeMid = Color3.fromRGB(236, 142, 198),
+		strokeDim = Color3.fromRGB(102, 56, 84),
+		pillDark = Color3.fromRGB(104, 34, 78),
+		pillMid = Color3.fromRGB(192, 74, 146),
+		pillShine = Color3.fromRGB(255, 182, 226),
+		scrollTint = Color3.fromRGB(238, 138, 196),
+	},
+	Moonlight = {
+		key = "Moonlight",
+		name = "Moonlight",
+		swatch1 = Color3.fromRGB(224, 244, 255),
+		swatch2 = Color3.fromRGB(122, 194, 252),
+		swatch3 = Color3.fromRGB(52, 108, 176),
+		accent = Color3.fromRGB(122, 192, 252),
+		bright = Color3.fromRGB(218, 240, 255),
+		mid = Color3.fromRGB(168, 210, 246),
+		muted = Color3.fromRGB(118, 156, 194),
+		neon = Color3.fromRGB(132, 204, 255),
+		glassBase = Color3.fromRGB(13, 19, 30),
+		glassGradTop = Color3.fromRGB(28, 40, 62),
+		glassGradMid = Color3.fromRGB(16, 22, 34),
+		glassGradBot = Color3.fromRGB(20, 30, 46),
+		cardBg = Color3.fromRGB(20, 28, 42),
+		cardHover = Color3.fromRGB(26, 36, 54),
+		tabActiveBg = Color3.fromRGB(34, 56, 86),
+		tabIdleBg = Color3.fromRGB(22, 30, 44),
+		strokeHi = Color3.fromRGB(230, 246, 255),
+		strokeMid = Color3.fromRGB(128, 198, 255),
+		strokeDim = Color3.fromRGB(52, 82, 120),
+		pillDark = Color3.fromRGB(28, 62, 114),
+		pillMid = Color3.fromRGB(64, 134, 214),
+		pillShine = Color3.fromRGB(172, 222, 255),
+		scrollTint = Color3.fromRGB(126, 196, 252),
+	},
+	Amethyst = {
+		key = "Amethyst",
+		name = "Amethyst",
+		swatch1 = Color3.fromRGB(242, 216, 255),
+		swatch2 = Color3.fromRGB(176, 98, 255),
+		swatch3 = Color3.fromRGB(92, 36, 166),
+		accent = Color3.fromRGB(182, 104, 255),
+		bright = Color3.fromRGB(236, 212, 255),
+		mid = Color3.fromRGB(204, 156, 248),
+		muted = Color3.fromRGB(148, 108, 192),
+		neon = Color3.fromRGB(194, 116, 255),
+		glassBase = Color3.fromRGB(16, 12, 26),
+		glassGradTop = Color3.fromRGB(40, 24, 62),
+		glassGradMid = Color3.fromRGB(20, 14, 32),
+		glassGradBot = Color3.fromRGB(28, 18, 44),
+		cardBg = Color3.fromRGB(25, 18, 40),
+		cardHover = Color3.fromRGB(33, 24, 52),
+		tabActiveBg = Color3.fromRGB(56, 32, 88),
+		tabIdleBg = Color3.fromRGB(26, 19, 42),
+		strokeHi = Color3.fromRGB(246, 226, 255),
+		strokeMid = Color3.fromRGB(186, 114, 255),
+		strokeDim = Color3.fromRGB(78, 46, 118),
+		pillDark = Color3.fromRGB(64, 24, 114),
+		pillMid = Color3.fromRGB(132, 58, 218),
+		pillShine = Color3.fromRGB(218, 158, 255),
+		scrollTint = Color3.fromRGB(184, 112, 255),
+	},
+	Emerald = {
+		key = "Emerald",
+		name = "Aurora Mint",
+		swatch1 = Color3.fromRGB(220, 255, 242),
+		swatch2 = Color3.fromRGB(92, 226, 182),
+		swatch3 = Color3.fromRGB(36, 124, 98),
+		accent = Color3.fromRGB(96, 226, 184),
+		bright = Color3.fromRGB(214, 252, 238),
+		mid = Color3.fromRGB(154, 226, 200),
+		muted = Color3.fromRGB(108, 168, 148),
+		neon = Color3.fromRGB(110, 238, 196),
+		glassBase = Color3.fromRGB(12, 22, 20),
+		glassGradTop = Color3.fromRGB(24, 48, 42),
+		glassGradMid = Color3.fromRGB(14, 26, 23),
+		glassGradBot = Color3.fromRGB(18, 36, 31),
+		cardBg = Color3.fromRGB(18, 32, 28),
+		cardHover = Color3.fromRGB(24, 42, 37),
+		tabActiveBg = Color3.fromRGB(30, 68, 56),
+		tabIdleBg = Color3.fromRGB(20, 34, 30),
+		strokeHi = Color3.fromRGB(226, 255, 244),
+		strokeMid = Color3.fromRGB(106, 230, 188),
+		strokeDim = Color3.fromRGB(46, 98, 82),
+		pillDark = Color3.fromRGB(24, 88, 68),
+		pillMid = Color3.fromRGB(52, 168, 132),
+		pillShine = Color3.fromRGB(162, 248, 218),
+		scrollTint = Color3.fromRGB(102, 228, 186),
+	},
+}
+
+-- ============================================================================
+-- 3. CONFIG SYSTEM (English-Only Names + Full Combat/Visual State)
+-- ============================================================================
+local vpInit = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize or Vector2.new(1920, 1009)
+
+local function sanitizeConfigName(raw)
+	if type(raw) ~= "string" then return "" end
+	local clean = raw:gsub("[^A-Za-z0-9_%-]", "")
+	if #clean > 24 then clean = string.sub(clean, 1, 24) end
+	return clean
+end
+
+local function makeDefaultState()
+	local w, h = 880, 530
+	return {
+		width = w,
+		height = h,
+		posX = math.floor((vpInit.X - w) * 0.5),
+		posY = math.floor((vpInit.Y - h) * 0.5),
+		muteStartupVoice = false,
+		neonBorderGlow = true,
+		theme = "Lavender",
+		-- BABFT Farm & Chests
+		autoFarmGold = false,
+		farmStageDelay = 12,
+		antiAfk = true,
+		autoBuyChest = false,
+		chestType = "Common Chest",
+		-- Water, Flight & Creative Movement
+		walkOnWater = false,
+		flyEnabled = false,
+		flySpeed = 65,
+		infJump = false,
+		boatFly = false,
+		boatFlySpeed = 75,
+		antiRagdoll = false,
+		clickTp = false,
+		-- Visuals & Creative Builder
+		espPlayers = false,
+		espChams = false,
+		chestBeam = false,
+		antiDarkness = false,
+		fullbright = false,
+		hologramPreview = false,
+		buildPreset = "FarmRaft",
+	}
+end
+
+Client.State = makeDefaultState()
+
+local function ensureDirs()
+	pcall(function()
+		if makefolder then
+			if not (isfolder and isfolder(Client.Paths.Root)) then makefolder(Client.Paths.Root) end
+			if not (isfolder and isfolder(Client.Paths.Configs)) then makefolder(Client.Paths.Configs) end
+		end
+	end)
+end
+
+local function applyDataToState(data)
+	if type(data) ~= "table" then return end
+	if type(data.width) == "number" then Client.State.width = math.clamp(math.floor(data.width + 0.5), 520, 1650) end
+	if type(data.height) == "number" then Client.State.height = math.clamp(math.floor(data.height + 0.5), 340, 960) end
+	if type(data.posX) == "number" then Client.State.posX = math.floor(data.posX + 0.5)
+	elseif type(data.offsetX) == "number" then Client.State.posX = math.floor(data.offsetX + 0.5) end
+	if type(data.posY) == "number" then Client.State.posY = math.floor(data.posY + 0.5)
+	elseif type(data.offsetY) == "number" then Client.State.posY = math.floor(data.offsetY + 0.5) end
+	if type(data.theme) == "string" and Client.Themes[data.theme] then Client.State.theme = data.theme end
+	local validChests = {
+		["Common Chest"] = true, ["Uncommon Chest"] = true,
+		["Rare Chest"] = true, ["Epic Chest"] = true, ["Legendary Chest"] = true,
+	}
+	if type(data.chestType) == "string" and validChests[data.chestType] then Client.State.chestType = data.chestType end
+	local validPresets = { FarmRaft = true, Heart = true, Tower = true }
+	if type(data.buildPreset) == "string" and validPresets[data.buildPreset] then Client.State.buildPreset = data.buildPreset end
+
+	local boolKeys = {
+		"muteStartupVoice", "neonBorderGlow",
+		"autoFarmGold", "antiAfk", "autoBuyChest",
+		"walkOnWater", "flyEnabled", "infJump", "boatFly", "antiRagdoll", "clickTp",
+		"espPlayers", "espChams", "chestBeam", "antiDarkness", "fullbright", "hologramPreview",
+	}
+	for _, k in ipairs(boolKeys) do
+		if type(data[k]) == "boolean" then Client.State[k] = data[k] end
+	end
+	local numBounds = {
+		farmStageDelay = { 6, 20 },
+		flySpeed = { 20, 160 },
+		boatFlySpeed = { 25, 180 },
+	}
+	for k, lim in pairs(numBounds) do
+		if type(data[k]) == "number" then
+			Client.State[k] = math.clamp(math.floor(data[k] + 0.5), lim[1], lim[2])
+		end
+	end
+end
+
+function Client.SaveAutoload(cfgName)
+	ensureDirs()
+	if typeof(writefile) ~= "function" then return end
+	pcall(function()
+		writefile(Client.Paths.Autoload, HttpService:JSONEncode({
+			activeConfig = cfgName or Client.ActiveConfigName,
+		}))
+	end)
+end
+
+function Client.SaveConfig(cfgName)
+	local clean = sanitizeConfigName(cfgName or Client.ActiveConfigName)
+	if clean == "" then return false, "Only English letters, digits, _ or -" end
+	ensureDirs()
+	if typeof(writefile) ~= "function" then return false, "writefile unavailable" end
+	Client.ActiveConfigName = clean
+	local path = Client.Paths.Configs .. "/" .. clean .. ".json"
+	local ok = pcall(function()
+		writefile(path, HttpService:JSONEncode(Client.State))
+		writefile(Client.Paths.LegacyLayout, HttpService:JSONEncode(Client.State))
+	end)
+	if ok then
+		Client.SaveAutoload(clean)
+		return true, clean
+	end
+	return false, "Write failed"
+end
+
+function Client.LoadConfig(cfgName)
+	local clean = sanitizeConfigName(cfgName)
+	if clean == "" then return false, "Invalid name" end
+	local path = Client.Paths.Configs .. "/" .. clean .. ".json"
+	if typeof(isfile) ~= "function" or typeof(readfile) ~= "function" or not isfile(path) then
+		return false, "Config not found"
+	end
+	local ok, raw = pcall(readfile, path)
+	if not ok or not raw or #raw < 2 then return false, "Read error" end
+	local okDec, data = pcall(function() return HttpService:JSONDecode(raw) end)
+	if not okDec or type(data) ~= "table" then return false, "Corrupt JSON" end
+	applyDataToState(data)
+	Client.ActiveConfigName = clean
+	Client.SaveAutoload(clean)
+	return true, clean
+end
+
+function Client.DeleteConfig(cfgName)
+	local clean = sanitizeConfigName(cfgName)
+	if clean == "" then return false, "Invalid name" end
+	local path = Client.Paths.Configs .. "/" .. clean .. ".json"
+	if typeof(isfile) == "function" and typeof(delfile) == "function" and isfile(path) then
+		local ok = pcall(delfile, path)
+		if ok then
+			if Client.ActiveConfigName == clean then Client.ActiveConfigName = "Default" end
+			return true
+		end
+	end
+	return false, "Cannot delete"
+end
+
+function Client.ListConfigs()
+	ensureDirs()
+	local names = {}
+	if typeof(listfiles) == "function" and (typeof(isfolder) ~= "function" or isfolder(Client.Paths.Configs)) then
+		local ok, entries = pcall(listfiles, Client.Paths.Configs)
+		if ok and type(entries) == "table" then
+			for _, entry in ipairs(entries) do
+				local name = tostring(entry):match("([^/\\]+)%.json$")
+				if name and sanitizeConfigName(name) == name then
+					table.insert(names, name)
+				end
+			end
+		end
+	end
+	table.sort(names)
+	if #names == 0 then
+		Client.SaveConfig("Default")
+		table.insert(names, "Default")
+	end
+	return names
+end
+
+do
+	ensureDirs()
+	local bootName = "Default"
+	if typeof(isfile) == "function" and typeof(readfile) == "function" and isfile(Client.Paths.Autoload) then
+		local ok, raw = pcall(readfile, Client.Paths.Autoload)
+		if ok and raw then
+			local okDec, dec = pcall(function() return HttpService:JSONDecode(raw) end)
+			if okDec and type(dec) == "table" and type(dec.activeConfig) == "string" then
+				local cleaned = sanitizeConfigName(dec.activeConfig)
+				if cleaned ~= "" then bootName = cleaned end
+			end
+		end
+	end
+	local loadedOk = Client.LoadConfig(bootName)
+	if not loadedOk then
+		if typeof(isfile) == "function" and typeof(readfile) == "function" and isfile(Client.Paths.LegacyLayout) then
+			local ok, raw = pcall(readfile, Client.Paths.LegacyLayout)
+			if ok and raw then
+				local okDec, dec = pcall(function() return HttpService:JSONDecode(raw) end)
+				if okDec and type(dec) == "table" then applyDataToState(dec) end
+			end
+		end
+		Client.SaveConfig("Default")
+	end
+	Client.ListConfigs()
+end
+
+local function getTheme()
+	return Client.Themes[Client.State.theme] or Client.Themes.Lavender
+end
+
+local StaticColors = {
+	MatteBlack  = Color3.fromRGB(4, 3, 8),
+	IntroCard   = Color3.fromRGB(18, 14, 30),
+	IntroBorder = Color3.fromRGB(122, 98, 184),
+	TrackBg     = Color3.fromRGB(32, 25, 50),
+	DangerRed   = Color3.fromRGB(235, 118, 138),
+	DangerBg    = Color3.fromRGB(58, 24, 34),
+}
+
+-- ============================================================================
+-- 4. LOAD LOCAL WORKSPACE ASSETS & PRELOAD
+-- ============================================================================
+local getAsset = getcustomasset or getsynasset
+local function loadAsset(path)
+	if getAsset and typeof(isfile) == "function" and isfile(path) then
+		local ok, id = pcall(getAsset, path)
+		if ok and id and id ~= "" then return id end
+	end
+	return nil
+end
+
+local sheetAssets = {}
+for i = 1, 10 do
+	local id = loadAsset(string.format("KronosTyan/sheet_%02d.png", i))
+	if id then table.insert(sheetAssets, id) end
+end
+
+local hatFrontAssets = {}
+local hatBackAssets = {}
+for i = 1, 2 do
+	local fid = loadAsset(string.format("KronosTyan/hat_v4_front_%02d.png", i))
+	local bid = loadAsset(string.format("KronosTyan/hat_v4_back_%02d.png", i))
+	if fid and bid then
+		table.insert(hatFrontAssets, fid)
+		table.insert(hatBackAssets, bid)
+	end
+end
+
+local starTexture        = loadAsset("KronosTyan/neon_star.png")
+local meteorTexture      = loadAsset("KronosTyan/neon_meteor.png")
+local glowTexture        = loadAsset("KronosTyan/radial_glow.png")
+local liquidGlassTexture = loadAsset("KronosTyan/liquid_glass.png")
+local matteNoiseTexture  = loadAsset("KronosTyan/matte_noise.png")
+local welcomeVoiceAsset  = loadAsset("KronosTyan/welcome_voice.mp3")
+local muteVoiceAsset     = loadAsset("KronosTyan/mute_voice.mp3")
+local hatVoiceAsset      = loadAsset("KronosTyan/hat_voice.mp3")
+
+local preloadList = {}
+for _, id in ipairs(sheetAssets) do table.insert(preloadList, id) end
+for _, id in ipairs(hatFrontAssets) do table.insert(preloadList, id) end
+for _, id in ipairs(hatBackAssets) do table.insert(preloadList, id) end
+for _, id in ipairs({ starTexture, meteorTexture, glowTexture, liquidGlassTexture, matteNoiseTexture, welcomeVoiceAsset, muteVoiceAsset, hatVoiceAsset }) do
+	if id then table.insert(preloadList, id) end
+end
+if #preloadList > 0 then
+	pcall(function() ContentProvider:PreloadAsync(preloadList) end)
+end
+
+-- ============================================================================
+-- 5. BLUR (INTRO ONLY), SCREEN GUI, & AUDIO INSTANCES
+-- ============================================================================
+local blurEffect = Client.TrackInstance(Instance.new("BlurEffect"))
+blurEffect.Name = randName(12)
+blurEffect.Size = 0
+blurEffect.Parent = Lighting
+Client.TrackTween(TweenService:Create(blurEffect, TweenInfo.new(0.55, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+	Size = 14
+}))
+
+local screenGui = Client.TrackInstance(Instance.new("ScreenGui"))
+screenGui.Name = randName(16)
+screenGui.ResetOnSpawn = false
+screenGui.IgnoreGuiInset = true
+screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+screenGui.DisplayOrder = 999
+screenGui.Parent = gethui()
+
+local welcomeSound = nil
+if welcomeVoiceAsset then
+	welcomeSound = Client.TrackSound(Instance.new("Sound"))
+	welcomeSound.Name = randName(8)
+	welcomeSound.SoundId = welcomeVoiceAsset
+	welcomeSound.Volume = 0.75
+	welcomeSound.Parent = SoundService
+	if not Client.State.muteStartupVoice then
+		task.delay(0.15, function()
+			if Client.Alive and welcomeSound and welcomeSound.Parent and not Client.State.muteStartupVoice then
+				pcall(function() welcomeSound:Play() end)
+			end
+		end)
+	end
+end
+
+local muteReactionSound = nil
+if muteVoiceAsset then
+	muteReactionSound = Client.TrackSound(Instance.new("Sound"))
+	muteReactionSound.Name = randName(8)
+	muteReactionSound.SoundId = muteVoiceAsset
+	muteReactionSound.Volume = 0.75
+	muteReactionSound.Parent = SoundService
+end
+
+local hatClickSound = nil
+if hatVoiceAsset then
+	hatClickSound = Client.TrackSound(Instance.new("Sound"))
+	hatClickSound.Name = randName(8)
+	hatClickSound.SoundId = hatVoiceAsset
+	hatClickSound.Volume = 0.75
+	hatClickSound.Parent = SoundService
+end
+
+-- ============================================================================
+-- 6. STAGE A: FULLSCREEN MATTE BACKDROP & INTRO PORTRAIT
+-- ============================================================================
+local backdrop = Instance.new("Frame")
+backdrop.Name = randName(10)
+backdrop.Size = UDim2.fromScale(1, 1)
+backdrop.BackgroundColor3 = StaticColors.MatteBlack
+backdrop.BackgroundTransparency = 1
+backdrop.BorderSizePixel = 0
+backdrop.ZIndex = 1
+backdrop.Parent = screenGui
+
+if matteNoiseTexture then
+	local fullMatteGrain = Instance.new("ImageLabel")
+	fullMatteGrain.Name = randName(8)
+	fullMatteGrain.Size = UDim2.fromScale(1, 1)
+	fullMatteGrain.BackgroundTransparency = 1
+	fullMatteGrain.Image = matteNoiseTexture
+	fullMatteGrain.ScaleType = Enum.ScaleType.Tile
+	fullMatteGrain.TileSize = UDim2.fromOffset(128, 128)
+	fullMatteGrain.ImageTransparency = 0.74
+	fullMatteGrain.ZIndex = 1
+	fullMatteGrain.Parent = backdrop
+end
+
+Client.TrackTween(TweenService:Create(backdrop, TweenInfo.new(0.5, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+	BackgroundTransparency = 0.04
+}))
+
+local skyLayer = Instance.new("Frame")
+skyLayer.Name = randName(10)
+skyLayer.Size = UDim2.fromScale(1, 1)
+skyLayer.BackgroundTransparency = 1
+skyLayer.ClipsDescendants = true
+skyLayer.ZIndex = 2
+skyLayer.Parent = backdrop
+
+local meteors = {}
+local stars = {}
+
+if meteorTexture then
+	local fallAngleDeg = 132
+	local rad = math.rad(fallAngleDeg)
+	local dirX, dirY = math.cos(rad), math.sin(rad)
+	for i = 1, 18 do
+		local len = math.random(145, 250)
+		local mImg = Instance.new("ImageLabel")
+		mImg.Name = randName(8)
+		mImg.Size = UDim2.fromOffset(len, math.floor(len * 0.19))
+		mImg.AnchorPoint = Vector2.new(0.5, 0.5)
+		mImg.Rotation = fallAngleDeg
+		mImg.BackgroundTransparency = 1
+		mImg.Image = meteorTexture
+		mImg.ImageTransparency = math.random(4, 28) / 100
+		mImg.ZIndex = 2
+		mImg.Parent = skyLayer
+		local speed = math.random(300, 510)
+		table.insert(meteors, {
+			img = mImg,
+			x = math.random(0, 2150),
+			y = math.random(-400, 950),
+			vx = dirX * speed,
+			vy = dirY * speed,
+			baseTrans = mImg.ImageTransparency,
+			phase = math.random() * 6.28,
+		})
+	end
+end
+
+if starTexture then
+	for i = 1, 36 do
+		local sz = math.random(14, 30)
+		local sImg = Instance.new("ImageLabel")
+		sImg.Name = randName(8)
+		sImg.Size = UDim2.fromOffset(sz, sz)
+		sImg.AnchorPoint = Vector2.new(0.5, 0.5)
+		sImg.BackgroundTransparency = 1
+		sImg.Image = starTexture
+		sImg.ImageTransparency = math.random(8, 42) / 100
+		sImg.ZIndex = 2
+		sImg.Parent = skyLayer
+		table.insert(stars, {
+			img = sImg,
+			baseSize = sz,
+			x = math.random(20, 1900),
+			y = math.random(-80, 1040),
+			vy = math.random(34, 86),
+			vx = math.random(-18, -4),
+			phase = math.random() * 6.28,
+		})
+	end
+end
+
+local introPanel = Instance.new("Frame")
+introPanel.Name = randName(10)
+introPanel.Size = UDim2.fromOffset(1100, 456)
+introPanel.AnchorPoint = Vector2.new(0.5, 0.5)
+introPanel.Position = UDim2.new(0.5, 0, 0.5, 16)
+introPanel.BackgroundColor3 = StaticColors.IntroCard
+introPanel.BackgroundTransparency = 0.14
+introPanel.BorderSizePixel = 0
+introPanel.ClipsDescendants = true
+introPanel.ZIndex = 5
+introPanel.Parent = backdrop
+
+local introCorner = Instance.new("UICorner")
+introCorner.CornerRadius = UDim.new(0, 12)
+introCorner.Parent = introPanel
+
+local introStroke = Instance.new("UIStroke")
+introStroke.Color = StaticColors.IntroBorder
+introStroke.Thickness = 1
+introStroke.Transparency = 0.30
+introStroke.Parent = introPanel
+
+local introGrad = Instance.new("UIGradient")
+introGrad.Color = ColorSequence.new({
+	ColorSequenceKeypoint.new(0, Color3.fromRGB(32, 24, 54)),
+	ColorSequenceKeypoint.new(0.5, Color3.fromRGB(23, 18, 39)),
+	ColorSequenceKeypoint.new(1, Color3.fromRGB(18, 15, 31)),
+})
+introGrad.Parent = introPanel
+
+local portraitBox = Instance.new("Frame")
+portraitBox.Name = randName(10)
+portraitBox.Size = UDim2.fromOffset(570, 456)
+portraitBox.BackgroundTransparency = 1
+portraitBox.ClipsDescendants = true
+portraitBox.ZIndex = 6
+portraitBox.Parent = introPanel
+
+if glowTexture then
+	local charBloom = Instance.new("ImageLabel")
+	charBloom.Name = randName(8)
+	charBloom.Size = UDim2.fromOffset(500, 460)
+	charBloom.Position = UDim2.fromOffset(48, 8)
+	charBloom.BackgroundTransparency = 1
+	charBloom.Image = glowTexture
+	charBloom.ImageTransparency = 0.24
+	charBloom.ZIndex = 6
+	charBloom.Parent = portraitBox
+end
+
+local CELL_W, CELL_H = 340, 272
+local sheetLabels = {}
+for sIdx, assetId in ipairs(sheetAssets) do
+	local img = Instance.new("ImageLabel")
+	img.Name = randName(8)
+	img.Size = UDim2.fromScale(1, 1)
+	img.BackgroundTransparency = 1
+	img.Image = assetId
+	img.ImageRectSize = Vector2.new(CELL_W, CELL_H)
+	img.ImageRectOffset = Vector2.new(0, 0)
+	img.ImageTransparency = (sIdx == 1) and 0 or 1
+	img.ScaleType = Enum.ScaleType.Stretch
+	img.ZIndex = (sIdx == 1) and 8 or 7
+	img.Parent = portraitBox
+	sheetLabels[sIdx] = img
+end
+
+local midDivider = Instance.new("Frame")
+midDivider.Name = randName(8)
+midDivider.Size = UDim2.new(0, 1, 1, -72)
+midDivider.Position = UDim2.fromOffset(570, 36)
+midDivider.BackgroundColor3 = StaticColors.IntroBorder
+midDivider.BackgroundTransparency = 0.65
+midDivider.BorderSizePixel = 0
+midDivider.ZIndex = 7
+midDivider.Parent = introPanel
+
+local textZone = Instance.new("Frame")
+textZone.Name = randName(10)
+textZone.Size = UDim2.fromOffset(475, 360)
+textZone.Position = UDim2.fromOffset(598, 48)
+textZone.BackgroundTransparency = 1
+textZone.ZIndex = 8
+textZone.Parent = introPanel
+
+local T0 = getTheme()
+
+if starTexture then
+	local kickerStar = Instance.new("ImageLabel")
+	kickerStar.Name = randName(8)
+	kickerStar.Size = UDim2.fromOffset(24, 24)
+	kickerStar.Position = UDim2.fromOffset(-2, 16)
+	kickerStar.BackgroundTransparency = 1
+	kickerStar.Image = starTexture
+	kickerStar.ZIndex = 9
+	kickerStar.Parent = textZone
+end
+
+local kickerLabel = Instance.new("TextLabel")
+kickerLabel.Name = randName(8)
+kickerLabel.Size = UDim2.fromOffset(400, 26)
+kickerLabel.Position = UDim2.fromOffset(28, 15)
+kickerLabel.BackgroundTransparency = 1
+kickerLabel.Font = Enum.Font.GothamBold
+kickerLabel.Text = "Добро пожаловать"
+kickerLabel.TextColor3 = T0.accent
+kickerLabel.TextSize = 17
+kickerLabel.TextXAlignment = Enum.TextXAlignment.Left
+kickerLabel.ZIndex = 9
+kickerLabel.Parent = textZone
+
+local localPlayer = Players.LocalPlayer
+local playerName = localPlayer and localPlayer.DisplayName or "Игрок"
+
+local greetingLabel = Instance.new("TextLabel")
+greetingLabel.Name = randName(8)
+greetingLabel.Size = UDim2.fromOffset(468, 54)
+greetingLabel.Position = UDim2.fromOffset(0, 50)
+greetingLabel.BackgroundTransparency = 1
+greetingLabel.Font = Enum.Font.GothamBlack
+greetingLabel.Text = "Привет, " .. playerName
+greetingLabel.TextColor3 = T0.bright
+greetingLabel.TextSize = 40
+greetingLabel.TextXAlignment = Enum.TextXAlignment.Left
+greetingLabel.TextTruncate = Enum.TextTruncate.AtEnd
+greetingLabel.ZIndex = 9
+greetingLabel.Parent = textZone
+
+local bodyLabel = Instance.new("TextLabel")
+bodyLabel.Name = randName(8)
+bodyLabel.Size = UDim2.fromOffset(465, 52)
+bodyLabel.Position = UDim2.fromOffset(0, 114)
+bodyLabel.BackgroundTransparency = 1
+bodyLabel.Font = Enum.Font.GothamMedium
+bodyLabel.Text = "Приятно снова тебя видеть. Ещё пару секунд — готовим экран к работе."
+bodyLabel.TextColor3 = T0.mid
+bodyLabel.TextSize = 16
+bodyLabel.TextWrapped = true
+bodyLabel.LineHeight = 1.32
+bodyLabel.TextXAlignment = Enum.TextXAlignment.Left
+bodyLabel.TextYAlignment = Enum.TextYAlignment.Top
+bodyLabel.ZIndex = 9
+bodyLabel.Parent = textZone
+
+local statusLabel = Instance.new("TextLabel")
+statusLabel.Name = randName(8)
+statusLabel.Size = UDim2.fromOffset(360, 22)
+statusLabel.Position = UDim2.fromOffset(0, 210)
+statusLabel.BackgroundTransparency = 1
+statusLabel.Font = Enum.Font.GothamMedium
+statusLabel.Text = "Загружаем оформление..."
+statusLabel.TextColor3 = T0.muted
+statusLabel.TextSize = 15
+statusLabel.TextXAlignment = Enum.TextXAlignment.Left
+statusLabel.ZIndex = 9
+statusLabel.Parent = textZone
+
+local percentLabel = Instance.new("TextLabel")
+percentLabel.Name = randName(8)
+percentLabel.Size = UDim2.fromOffset(90, 22)
+percentLabel.Position = UDim2.fromOffset(375, 210)
+percentLabel.BackgroundTransparency = 1
+percentLabel.Font = Enum.Font.GothamBold
+percentLabel.Text = "0%"
+percentLabel.TextColor3 = T0.bright
+percentLabel.TextSize = 15
+percentLabel.TextXAlignment = Enum.TextXAlignment.Right
+percentLabel.ZIndex = 9
+percentLabel.Parent = textZone
+
+local track = Instance.new("Frame")
+track.Name = randName(8)
+track.Size = UDim2.fromOffset(465, 7)
+track.Position = UDim2.fromOffset(0, 244)
+track.BackgroundColor3 = StaticColors.TrackBg
+track.BorderSizePixel = 0
+track.ZIndex = 9
+track.Parent = textZone
+
+local trackCorner = Instance.new("UICorner")
+trackCorner.CornerRadius = UDim.new(0, 99)
+trackCorner.Parent = track
+
+local fill = Instance.new("Frame")
+fill.Name = randName(8)
+fill.Size = UDim2.new(0, 0, 1, 0)
+fill.BackgroundColor3 = Color3.new(1, 1, 1)
+fill.BorderSizePixel = 0
+fill.ZIndex = 10
+fill.Parent = track
+
+local fillCorner = Instance.new("UICorner")
+fillCorner.CornerRadius = UDim.new(0, 99)
+fillCorner.Parent = fill
+
+local fillGrad = Instance.new("UIGradient")
+fillGrad.Color = ColorSequence.new({
+	ColorSequenceKeypoint.new(0, T0.muted),
+	ColorSequenceKeypoint.new(0.55, T0.accent),
+	ColorSequenceKeypoint.new(1, T0.bright),
+})
+fillGrad.Parent = fill
+
+local tipStar = nil
+if starTexture then
+	tipStar = Instance.new("ImageLabel")
+	tipStar.Name = randName(8)
+	tipStar.Size = UDim2.fromOffset(28, 28)
+	tipStar.AnchorPoint = Vector2.new(0.5, 0.5)
+	tipStar.Position = UDim2.new(1, 0, 0.5, 0)
+	tipStar.BackgroundTransparency = 1
+	tipStar.Image = starTexture
+	tipStar.ZIndex = 11
+	tipStar.Parent = fill
+end
+
+local hintLabel = Instance.new("TextLabel")
+hintLabel.Name = randName(8)
+hintLabel.Size = UDim2.fromOffset(465, 22)
+hintLabel.Position = UDim2.fromOffset(0, 294)
+hintLabel.BackgroundTransparency = 1
+hintLabel.Font = Enum.Font.GothamMedium
+hintLabel.Text = "Нажми RightShift, чтобы скрыть или открыть экран"
+hintLabel.TextColor3 = T0.muted
+hintLabel.TextSize = 14
+hintLabel.TextXAlignment = Enum.TextXAlignment.Left
+hintLabel.ZIndex = 9
+hintLabel.Parent = textZone
+
+Client.TrackTween(TweenService:Create(introPanel, TweenInfo.new(0.65, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {
+	Position = UDim2.new(0.5, 0, 0.5, 0)
+}))
+
+-- ============================================================================
+-- 7. STAGE B: FROSTED LIQUID GLASS SHELL (UNBROKEN 1px LINES + NEON HALO)
+-- ============================================================================
+local glassWindow = Instance.new("Frame")
+glassWindow.Name = randName(10)
+glassWindow.Size = UDim2.fromOffset(Client.State.width, Client.State.height)
+glassWindow.Position = UDim2.fromOffset(Client.State.posX, Client.State.posY)
+glassWindow.BackgroundColor3 = T0.glassBase
+glassWindow.BackgroundTransparency = 1
+glassWindow.BorderSizePixel = 0
+glassWindow.Visible = false
+glassWindow.Active = true
+glassWindow.ZIndex = 15
+glassWindow.Parent = backdrop
+
+local OUTER_RADIUS = 18
+local glassCorner = Instance.new("UICorner")
+glassCorner.CornerRadius = UDim.new(0, OUTER_RADIUS)
+glassCorner.Parent = glassWindow
+
+local glassOuterStroke = Instance.new("UIStroke")
+glassOuterStroke.Name = randName(8)
+glassOuterStroke.Color = Color3.new(1, 1, 1)
+glassOuterStroke.Thickness = 1
+glassOuterStroke.Transparency = 1
+glassOuterStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+glassOuterStroke.Parent = glassWindow
+
+local strokeGrad = Instance.new("UIGradient")
+strokeGrad.Rotation = 38
+strokeGrad.Parent = glassOuterStroke
+
+local neonRimFrame = Instance.new("Frame")
+neonRimFrame.Name = randName(8)
+neonRimFrame.Size = UDim2.new(1, 2, 1, 2)
+neonRimFrame.Position = UDim2.fromOffset(-1, -1)
+neonRimFrame.BackgroundTransparency = 1
+neonRimFrame.BorderSizePixel = 0
+neonRimFrame.ZIndex = 14
+neonRimFrame.Parent = glassWindow
+
+local neonRimCorner = Instance.new("UICorner")
+neonRimCorner.CornerRadius = UDim.new(0, OUTER_RADIUS + 1)
+neonRimCorner.Parent = neonRimFrame
+
+local neonRimStroke = Instance.new("UIStroke")
+neonRimStroke.Color = Color3.new(1, 1, 1)
+neonRimStroke.Thickness = 2
+neonRimStroke.Transparency = 1
+neonRimStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+neonRimStroke.Parent = neonRimFrame
+
+local neonRimGrad = Instance.new("UIGradient")
+neonRimGrad.Rotation = 135
+neonRimGrad.Parent = neonRimStroke
+
+local glassBodyGrad = Instance.new("UIGradient")
+glassBodyGrad.Rotation = 52
+glassBodyGrad.Parent = glassWindow
+
+local liquidSheen = nil
+if liquidGlassTexture then
+	liquidSheen = Instance.new("ImageLabel")
+	liquidSheen.Name = randName(8)
+	liquidSheen.Size = UDim2.new(1, -2, 1, -2)
+	liquidSheen.Position = UDim2.fromOffset(1, 1)
+	liquidSheen.BackgroundTransparency = 1
+	liquidSheen.Image = liquidGlassTexture
+	liquidSheen.ScaleType = Enum.ScaleType.Stretch
+	liquidSheen.ImageTransparency = 1
+	liquidSheen.ZIndex = 16
+	liquidSheen.Parent = glassWindow
+	local lc = Instance.new("UICorner")
+	lc.CornerRadius = UDim.new(0, OUTER_RADIUS - 1)
+	lc.Parent = liquidSheen
+end
+
+local glassFrostGrain = nil
+if matteNoiseTexture then
+	glassFrostGrain = Instance.new("ImageLabel")
+	glassFrostGrain.Name = randName(8)
+	glassFrostGrain.Size = UDim2.new(1, -2, 1, -2)
+	glassFrostGrain.Position = UDim2.fromOffset(1, 1)
+	glassFrostGrain.BackgroundTransparency = 1
+	glassFrostGrain.Image = matteNoiseTexture
+	glassFrostGrain.ScaleType = Enum.ScaleType.Tile
+	glassFrostGrain.TileSize = UDim2.fromOffset(128, 128)
+	glassFrostGrain.ImageTransparency = 1
+	glassFrostGrain.ZIndex = 17
+	glassFrostGrain.Parent = glassWindow
+	local gc = Instance.new("UICorner")
+	gc.CornerRadius = UDim.new(0, OUTER_RADIUS - 1)
+	gc.Parent = glassFrostGrain
+end
+
+local topMeniscus = Instance.new("Frame")
+topMeniscus.Name = randName(8)
+topMeniscus.Size = UDim2.new(1, -44, 0, 1)
+topMeniscus.Position = UDim2.fromOffset(22, 0)
+topMeniscus.BackgroundColor3 = T0.strokeHi
+topMeniscus.BackgroundTransparency = 1
+topMeniscus.BorderSizePixel = 0
+topMeniscus.ZIndex = 18
+topMeniscus.Parent = glassWindow
+
+local meniscusGrad = Instance.new("UIGradient")
+meniscusGrad.Transparency = NumberSequence.new({
+	NumberSequenceKeypoint.new(0.00, 1.00),
+	NumberSequenceKeypoint.new(0.18, 0.16),
+	NumberSequenceKeypoint.new(0.50, 0.04),
+	NumberSequenceKeypoint.new(0.82, 0.25),
+	NumberSequenceKeypoint.new(1.00, 1.00),
+})
+meniscusGrad.Parent = topMeniscus
+
+local botMeniscus = Instance.new("Frame")
+botMeniscus.Name = randName(8)
+botMeniscus.Size = UDim2.new(1, -60, 0, 1)
+botMeniscus.Position = UDim2.new(0, 30, 1, -1)
+botMeniscus.BackgroundColor3 = T0.neon
+botMeniscus.BackgroundTransparency = 1
+botMeniscus.BorderSizePixel = 0
+botMeniscus.ZIndex = 18
+botMeniscus.Parent = glassWindow
+
+local botMeniscusGrad = Instance.new("UIGradient")
+botMeniscusGrad.Transparency = NumberSequence.new({
+	NumberSequenceKeypoint.new(0.00, 1.00),
+	NumberSequenceKeypoint.new(0.25, 0.42),
+	NumberSequenceKeypoint.new(0.50, 0.18),
+	NumberSequenceKeypoint.new(0.75, 0.42),
+	NumberSequenceKeypoint.new(1.00, 1.00),
+})
+botMeniscusGrad.Parent = botMeniscus
+
+-- ============================================================================
+-- 8. INNER CHAMBER, SIDEBAR (READ | MAIN | VISUALS | MISC), & GLYPHS
+-- ============================================================================
+local innerChamber = Instance.new("Frame")
+innerChamber.Name = randName(8)
+innerChamber.Size = UDim2.new(1, -22, 1, -44)
+innerChamber.Position = UDim2.fromOffset(11, 11)
+innerChamber.BackgroundColor3 = Color3.fromRGB(13, 11, 22)
+innerChamber.BackgroundTransparency = 1
+innerChamber.BorderSizePixel = 0
+innerChamber.ZIndex = 18
+innerChamber.Parent = glassWindow
+
+local innerChamberCorner = Instance.new("UICorner")
+innerChamberCorner.CornerRadius = UDim.new(0, 13)
+innerChamberCorner.Parent = innerChamber
+
+local innerChamberStroke = Instance.new("UIStroke")
+innerChamberStroke.Color = Color3.new(1, 1, 1)
+innerChamberStroke.Thickness = 1
+innerChamberStroke.Transparency = 1
+innerChamberStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+innerChamberStroke.Parent = innerChamber
+
+local innerChamberGrad = Instance.new("UIGradient")
+innerChamberGrad.Rotation = 140
+innerChamberGrad.Parent = innerChamberStroke
+
+local sidebar = Instance.new("Frame")
+sidebar.Name = randName(8)
+sidebar.Size = UDim2.new(0, 184, 1, 0)
+sidebar.BackgroundTransparency = 1
+sidebar.ZIndex = 19
+sidebar.Parent = innerChamber
+
+local sidebarLine = Instance.new("Frame")
+sidebarLine.Name = randName(8)
+sidebarLine.Size = UDim2.new(0, 1, 1, -24)
+sidebarLine.Position = UDim2.new(1, 0, 0, 12)
+sidebarLine.BackgroundColor3 = T0.neon
+sidebarLine.BackgroundTransparency = 0.72
+sidebarLine.BorderSizePixel = 0
+sidebarLine.ZIndex = 20
+sidebarLine.Parent = sidebar
+
+local sidebarLineGrad = Instance.new("UIGradient")
+sidebarLineGrad.Rotation = 90
+sidebarLineGrad.Transparency = NumberSequence.new({
+	NumberSequenceKeypoint.new(0.00, 1.00),
+	NumberSequenceKeypoint.new(0.18, 0.28),
+	NumberSequenceKeypoint.new(0.50, 0.08),
+	NumberSequenceKeypoint.new(0.82, 0.28),
+	NumberSequenceKeypoint.new(1.00, 1.00),
+})
+sidebarLineGrad.Parent = sidebarLine
+
+local sideHeader = Instance.new("Frame")
+sideHeader.Name = randName(8)
+sideHeader.Size = UDim2.new(1, -18, 0, 102)
+sideHeader.Position = UDim2.fromOffset(10, 12)
+sideHeader.BackgroundTransparency = 1
+sideHeader.ZIndex = 20
+sideHeader.Parent = sidebar
+
+local sideHeaderGlow = nil
+if glowTexture then
+	sideHeaderGlow = Instance.new("ImageLabel")
+	sideHeaderGlow.Name = randName(8)
+	sideHeaderGlow.Size = UDim2.fromOffset(180, 90)
+	sideHeaderGlow.Position = UDim2.fromOffset(-10, -14)
+	sideHeaderGlow.BackgroundTransparency = 1
+	sideHeaderGlow.Image = glowTexture
+	sideHeaderGlow.ImageColor3 = T0.neon
+	sideHeaderGlow.ImageTransparency = 0.62
+	sideHeaderGlow.ZIndex = 19
+	sideHeaderGlow.Parent = sideHeader
+end
+
+local brandLabel = Instance.new("TextLabel")
+brandLabel.Name = randName(8)
+brandLabel.Size = UDim2.new(1, 0, 0, 26)
+brandLabel.Position = UDim2.fromOffset(8, 2)
+brandLabel.BackgroundTransparency = 1
+brandLabel.Font = Enum.Font.GothamBlack
+brandLabel.Text = "KRONOS"
+brandLabel.TextColor3 = Color3.new(1, 1, 1)
+brandLabel.TextSize = 22
+brandLabel.TextXAlignment = Enum.TextXAlignment.Left
+brandLabel.ZIndex = 21
+brandLabel.Parent = sideHeader
+
+local kronosTitleGrad = Instance.new("UIGradient")
+kronosTitleGrad.Rotation = 8
+kronosTitleGrad.Parent = brandLabel
+
+local brandSub = Instance.new("TextLabel")
+brandSub.Name = randName(8)
+brandSub.Size = UDim2.new(1, 0, 0, 16)
+brandSub.Position = UDim2.fromOffset(9, 28)
+brandSub.BackgroundTransparency = 1
+brandSub.Font = Enum.Font.GothamMedium
+brandSub.Text = "by " .. Client.Info.Author
+brandSub.TextColor3 = T0.muted
+brandSub.TextSize = 12
+brandSub.TextXAlignment = Enum.TextXAlignment.Left
+brandSub.ZIndex = 21
+brandSub.Parent = sideHeader
+
+local subAura = nil
+if glowTexture then
+	subAura = Instance.new("ImageLabel")
+	subAura.Name = randName(8)
+	subAura.Size = UDim2.fromOffset(174, 54)
+	subAura.Position = UDim2.fromOffset(-6, 46)
+	subAura.BackgroundTransparency = 1
+	subAura.Image = glowTexture
+	subAura.ImageColor3 = T0.neon
+	subAura.ImageTransparency = 0.42
+	subAura.ZIndex = 20
+	subAura.Parent = sideHeader
+end
+
+local subBadge = Instance.new("Frame")
+subBadge.Name = randName(8)
+subBadge.Size = UDim2.new(1, -14, 0, 26)
+subBadge.Position = UDim2.fromOffset(8, 56)
+subBadge.BackgroundColor3 = Color3.new(1, 1, 1)
+subBadge.BackgroundTransparency = 0.16
+subBadge.BorderSizePixel = 0
+subBadge.ZIndex = 21
+subBadge.Parent = sideHeader
+
+local subBadgeCorner = Instance.new("UICorner")
+subBadgeCorner.CornerRadius = UDim.new(0, 8)
+subBadgeCorner.Parent = subBadge
+
+local subFillGrad = Instance.new("UIGradient")
+subFillGrad.Rotation = 12
+subFillGrad.Parent = subBadge
+
+local subBadgeStroke = Instance.new("UIStroke")
+subBadgeStroke.Color = Color3.new(1, 1, 1)
+subBadgeStroke.Thickness = 1
+subBadgeStroke.Transparency = 0.25
+subBadgeStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+subBadgeStroke.Parent = subBadge
+
+local subStrokeGrad = Instance.new("UIGradient")
+subStrokeGrad.Rotation = 25
+subStrokeGrad.Parent = subBadgeStroke
+
+local subStar = nil
+if starTexture then
+	subStar = Instance.new("ImageLabel")
+	subStar.Name = randName(8)
+	subStar.Size = UDim2.fromOffset(15, 15)
+	subStar.Position = UDim2.fromOffset(10, 5)
+	subStar.BackgroundTransparency = 1
+	subStar.Image = starTexture
+	subStar.ZIndex = 22
+	subStar.Parent = subBadge
+end
+
+local subText = Instance.new("TextLabel")
+subText.Name = randName(8)
+subText.Size = UDim2.new(1, -34, 1, 0)
+subText.Position = UDim2.fromOffset(29, 0)
+subText.BackgroundTransparency = 1
+subText.Font = Enum.Font.GothamBold
+subText.Text = "LIFETIME"
+subText.TextColor3 = Color3.new(1, 1, 1)
+subText.TextSize = 11
+subText.TextXAlignment = Enum.TextXAlignment.Left
+subText.ZIndex = 22
+subText.Parent = subBadge
+
+local subTextGrad = Instance.new("UIGradient")
+subTextGrad.Rotation = 0
+subTextGrad.Parent = subText
+
+local navContainer = Instance.new("Frame")
+navContainer.Name = randName(8)
+navContainer.Size = UDim2.new(1, -20, 1, -134)
+navContainer.Position = UDim2.fromOffset(10, 118)
+navContainer.BackgroundTransparency = 1
+navContainer.ZIndex = 20
+navContainer.Parent = sidebar
+
+local navLayout = Instance.new("UIListLayout")
+navLayout.SortOrder = Enum.SortOrder.LayoutOrder
+navLayout.Padding = UDim.new(0, 7)
+navLayout.Parent = navContainer
+
+local pagesContainer = Instance.new("Frame")
+pagesContainer.Name = randName(8)
+pagesContainer.Size = UDim2.new(1, -186, 1, 0)
+pagesContainer.Position = UDim2.fromOffset(186, 0)
+pagesContainer.BackgroundTransparency = 1
+pagesContainer.ClipsDescendants = true
+pagesContainer.ZIndex = 19
+pagesContainer.Parent = innerChamber
+
+local function buildTabGlyph(parent, glyphId, initialColor)
+	local box = Instance.new("Frame")
+	box.Name = randName(6)
+	box.Size = UDim2.fromOffset(18, 18)
+	box.Position = UDim2.fromOffset(12, 9)
+	box.BackgroundTransparency = 1
+	box.ZIndex = 22
+	box.Parent = parent
+
+	local parts = {}
+	local strokes = {}
+	if glyphId == "read" then
+		local sheet = Instance.new("Frame")
+		sheet.Size = UDim2.fromOffset(12, 14)
+		sheet.Position = UDim2.fromOffset(3, 2)
+		sheet.BackgroundTransparency = 1
+		sheet.ZIndex = 22
+		sheet.Parent = box
+		local sc = Instance.new("UICorner")
+		sc.CornerRadius = UDim.new(0, 2)
+		sc.Parent = sheet
+		local ss = Instance.new("UIStroke")
+		ss.Thickness = 1.2
+		ss.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+		ss.Parent = sheet
+		table.insert(strokes, ss)
+
+		local lineWidths = { 7, 7, 5 }
+		local lineYs = { 4, 7, 10 }
+		for i = 1, 3 do
+			local ln = Instance.new("Frame")
+			ln.Size = UDim2.fromOffset(lineWidths[i], 1)
+			ln.Position = UDim2.fromOffset(2, lineYs[i])
+			ln.BorderSizePixel = 0
+			ln.ZIndex = 23
+			ln.Parent = sheet
+			table.insert(parts, ln)
+		end
+	elseif glyphId == "main" then
+		local blade = Instance.new("Frame")
+		blade.Size = UDim2.fromOffset(2, 13)
+		blade.Position = UDim2.fromOffset(9, 2)
+		blade.AnchorPoint = Vector2.new(0.5, 0)
+		blade.Rotation = 45
+		blade.BorderSizePixel = 0
+		blade.ZIndex = 22
+		blade.Parent = box
+		local bc = Instance.new("UICorner")
+		bc.CornerRadius = UDim.new(0, 2)
+		bc.Parent = blade
+		table.insert(parts, blade)
+
+		local guard = Instance.new("Frame")
+		guard.Size = UDim2.fromOffset(7, 2)
+		guard.Position = UDim2.fromOffset(5, 11)
+		guard.AnchorPoint = Vector2.new(0.5, 0.5)
+		guard.Rotation = 45
+		guard.BorderSizePixel = 0
+		guard.ZIndex = 22
+		guard.Parent = box
+		local gc = Instance.new("UICorner")
+		gc.CornerRadius = UDim.new(0, 2)
+		gc.Parent = guard
+		table.insert(parts, guard)
+
+		local hilt = Instance.new("Frame")
+		hilt.Size = UDim2.fromOffset(2, 5)
+		hilt.Position = UDim2.fromOffset(3, 13)
+		hilt.AnchorPoint = Vector2.new(0.5, 0.5)
+		hilt.Rotation = 45
+		hilt.BorderSizePixel = 0
+		hilt.ZIndex = 22
+		hilt.Parent = box
+		table.insert(parts, hilt)
+	elseif glyphId == "visuals" then
+		local ring = Instance.new("Frame")
+		ring.Size = UDim2.fromOffset(10, 10)
+		ring.Position = UDim2.fromOffset(2, 2)
+		ring.BackgroundTransparency = 1
+		ring.ZIndex = 22
+		ring.Parent = box
+		local rc = Instance.new("UICorner")
+		rc.CornerRadius = UDim.new(0.5, 0)
+		rc.Parent = ring
+		local rs = Instance.new("UIStroke")
+		rs.Thickness = 1.4
+		rs.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+		rs.Parent = ring
+		table.insert(strokes, rs)
+
+		local handle = Instance.new("Frame")
+		handle.Size = UDim2.fromOffset(7, 2)
+		handle.Position = UDim2.fromOffset(12, 13)
+		handle.AnchorPoint = Vector2.new(0.5, 0.5)
+		handle.Rotation = 45
+		handle.BorderSizePixel = 0
+		handle.ZIndex = 22
+		handle.Parent = box
+		local hc = Instance.new("UICorner")
+		hc.CornerRadius = UDim.new(0, 2)
+		hc.Parent = handle
+		table.insert(parts, handle)
+	elseif glyphId == "visuals" then
+		local ring = Instance.new("Frame")
+		ring.Size = UDim2.fromOffset(10, 10)
+		ring.Position = UDim2.fromOffset(2, 2)
+		ring.BackgroundTransparency = 1
+		ring.ZIndex = 22
+		ring.Parent = box
+		local rc = Instance.new("UICorner")
+		rc.CornerRadius = UDim.new(0.5, 0)
+		rc.Parent = ring
+		local rs = Instance.new("UIStroke")
+		rs.Thickness = 1.4
+		rs.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+		rs.Parent = ring
+		table.insert(strokes, rs)
+
+		local handle = Instance.new("Frame")
+		handle.Size = UDim2.fromOffset(7, 2)
+		handle.Position = UDim2.fromOffset(12, 13)
+		handle.AnchorPoint = Vector2.new(0.5, 0.5)
+		handle.Rotation = 45
+		handle.BorderSizePixel = 0
+		handle.ZIndex = 22
+		handle.Parent = box
+		local hc = Instance.new("UICorner")
+		hc.CornerRadius = UDim.new(0, 2)
+		hc.Parent = handle
+		table.insert(parts, handle)
+	else
+		local ys = { 4, 9, 14 }
+		local knobXs = { 5, 11, 7 }
+		for rowIdx = 1, 3 do
+			local rail = Instance.new("Frame")
+			rail.Size = UDim2.fromOffset(14, 1)
+			rail.Position = UDim2.fromOffset(2, ys[rowIdx])
+			rail.BorderSizePixel = 0
+			rail.ZIndex = 22
+			rail.Parent = box
+			table.insert(parts, rail)
+
+			local knob = Instance.new("Frame")
+			knob.Size = UDim2.fromOffset(4, 4)
+			knob.AnchorPoint = Vector2.new(0.5, 0.5)
+			knob.Position = UDim2.fromOffset(knobXs[rowIdx], ys[rowIdx])
+			knob.BorderSizePixel = 0
+			knob.ZIndex = 23
+			knob.Parent = box
+			local kc = Instance.new("UICorner")
+			kc.CornerRadius = UDim.new(0.5, 0)
+			kc.Parent = knob
+			table.insert(parts, knob)
+		end
+	end
+
+	local function setColor(col, trans)
+		for _, p in ipairs(parts) do
+			p.BackgroundColor3 = col
+			p.BackgroundTransparency = trans or 0
+		end
+		for _, s in ipairs(strokes) do
+			s.Color = col
+			s.Transparency = trans or 0
+		end
+	end
+	setColor(initialColor, 0)
+	return setColor
+end
+
+local TABS = {
+	{ id = "read",    title = "Read" },
+	{ id = "main",    title = "Main" },
+	{ id = "visuals", title = "Visuals" },
+	{ id = "misc",    title = "Misc" },
+}
+
+local tabPages = {}
+local tabButtons = {}
+local activeTabId = "main"
+
+local function refreshTabsVisual()
+	local th = getTheme()
+	for id, btnData in pairs(tabButtons) do
+		local isAct = (id == activeTabId)
+		tabPages[id].Visible = isAct
+		btnData.btn.BackgroundColor3 = isAct and th.tabActiveBg or th.tabIdleBg
+		btnData.btn.BackgroundTransparency = isAct and 0.24 or 0.80
+		btnData.stroke.Color = isAct and th.neon or th.muted
+		btnData.stroke.Transparency = isAct and 0.36 or 0.92
+		btnData.indicator.BackgroundColor3 = th.neon
+		btnData.indicator.BackgroundTransparency = isAct and 0.05 or 1
+		btnData.label.TextColor3 = isAct and th.bright or th.muted
+		btnData.setGlyphColor(isAct and th.neon or th.muted, isAct and 0 or 0.12)
+	end
+end
+
+function Client.SetTab(tabId)
+	if tabPages[tabId] then
+		activeTabId = tabId
+		refreshTabsVisual()
+		return true
+	end
+	return false
+end
+
+for idx, info in ipairs(TABS) do
+	local page = Instance.new("ScrollingFrame")
+	page.Name = randName(8)
+	page.Size = UDim2.new(1, -16, 1, -16)
+	page.Position = UDim2.fromOffset(8, 8)
+	page.BackgroundTransparency = 1
+	page.BorderSizePixel = 0
+	page.ScrollBarThickness = 2
+	page.ScrollBarImageColor3 = T0.scrollTint
+	page.ScrollBarImageTransparency = 0.35
+	page.AutomaticCanvasSize = Enum.AutomaticSize.Y
+	page.CanvasSize = UDim2.fromOffset(0, 0)
+	page.Visible = (info.id == activeTabId)
+	page.ZIndex = 20
+	page.Parent = pagesContainer
+
+	local pad = Instance.new("UIPadding")
+	pad.PaddingLeft = UDim.new(0, 6)
+	pad.PaddingRight = UDim.new(0, 10)
+	pad.PaddingTop = UDim.new(0, 4)
+	pad.PaddingBottom = UDim.new(0, 10)
+	pad.Parent = page
+
+	local pageLayout = Instance.new("UIListLayout")
+	pageLayout.SortOrder = Enum.SortOrder.LayoutOrder
+	pageLayout.Padding = UDim.new(0, 8)
+	pageLayout.Parent = page
+
+	tabPages[info.id] = page
+
+	local btn = Instance.new("TextButton")
+	btn.Name = randName(8)
+	btn.LayoutOrder = idx
+	btn.Size = UDim2.new(1, 0, 0, 36)
+	btn.BackgroundColor3 = T0.tabIdleBg
+	btn.BackgroundTransparency = 0.80
+	btn.BorderSizePixel = 0
+	btn.AutoButtonColor = false
+	btn.Text = ""
+	btn.ZIndex = 21
+	btn.Parent = navContainer
+
+	local bc = Instance.new("UICorner")
+	bc.CornerRadius = UDim.new(0, 9)
+	bc.Parent = btn
+
+	local bs = Instance.new("UIStroke")
+	bs.Color = T0.muted
+	bs.Thickness = 1
+	bs.Transparency = 0.92
+	bs.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+	bs.Parent = btn
+
+	local indicator = Instance.new("Frame")
+	indicator.Name = randName(6)
+	indicator.Size = UDim2.fromOffset(2, 16)
+	indicator.Position = UDim2.fromOffset(4, 10)
+	indicator.BackgroundColor3 = T0.neon
+	indicator.BackgroundTransparency = 1
+	indicator.BorderSizePixel = 0
+	indicator.ZIndex = 22
+	indicator.Parent = btn
+	local ic = Instance.new("UICorner")
+	ic.CornerRadius = UDim.new(0, 99)
+	ic.Parent = indicator
+
+	local setGlyphColor = buildTabGlyph(btn, info.id, T0.muted)
+
+	local lbl = Instance.new("TextLabel")
+	lbl.Name = randName(6)
+	lbl.Size = UDim2.new(1, -44, 1, 0)
+	lbl.Position = UDim2.fromOffset(38, 0)
+	lbl.BackgroundTransparency = 1
+	lbl.Font = Enum.Font.GothamBold
+	lbl.Text = info.title
+	lbl.TextColor3 = T0.muted
+	lbl.TextSize = 13
+	lbl.TextXAlignment = Enum.TextXAlignment.Left
+	lbl.ZIndex = 22
+	lbl.Parent = btn
+
+	tabButtons[info.id] = {
+		btn = btn,
+		stroke = bs,
+		indicator = indicator,
+		label = lbl,
+		setGlyphColor = setGlyphColor,
+	}
+
+	Client.Bind(btn.MouseEnter, function()
+		if activeTabId ~= info.id then btn.BackgroundTransparency = 0.48 end
+	end)
+	Client.Bind(btn.MouseLeave, function()
+		if activeTabId ~= info.id then btn.BackgroundTransparency = 0.80 end
+	end)
+	Client.Bind(btn.MouseButton1Click, function()
+		activeTabId = info.id
+		refreshTabsVisual()
+	end)
+end
+
+-- ============================================================================
+-- 9. COMPACT UI COMPONENT HELPERS (Cards, Mini-Switches, Sliders, Cycles)
+-- ============================================================================
+local function makeCard(parent, order, widthUDim, height)
+	local th = getTheme()
+	local card = Instance.new("Frame")
+	card.Name = randName(8)
+	card.LayoutOrder = order
+	card.Size = UDim2.new(widthUDim.Scale, widthUDim.Offset, 0, height)
+	card.BackgroundColor3 = th.cardBg
+	card.BackgroundTransparency = 0.36
+	card.BorderSizePixel = 0
+	card.ZIndex = 21
+	card.Parent = parent
+
+	local cc = Instance.new("UICorner")
+	cc.CornerRadius = UDim.new(0, 10)
+	cc.Parent = card
+
+	local cs = Instance.new("UIStroke")
+	cs.Color = th.neon
+	cs.Thickness = 1
+	cs.Transparency = 0.65
+	cs.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+	cs.Parent = card
+
+	table.insert(Client.ThemeListeners, function(newTh)
+		card.BackgroundColor3 = newTh.cardBg
+		cs.Color = newTh.neon
+	end)
+	return card, cs
+end
+
+local function makeSectionHeader(parent, order, title, subtitle)
+	local th = getTheme()
+	local wrap = Instance.new("Frame")
+	wrap.Name = randName(8)
+	wrap.LayoutOrder = order
+	wrap.Size = UDim2.new(1, 0, 0, 34)
+	wrap.BackgroundTransparency = 1
+	wrap.ZIndex = 21
+	wrap.Parent = parent
+
+	local hLbl = Instance.new("TextLabel")
+	hLbl.Size = UDim2.new(1, 0, 0, 18)
+	hLbl.BackgroundTransparency = 1
+	hLbl.Font = Enum.Font.GothamBold
+	hLbl.Text = title
+	hLbl.TextColor3 = th.bright
+	hLbl.TextSize = 15
+	hLbl.TextXAlignment = Enum.TextXAlignment.Left
+	hLbl.ZIndex = 21
+	hLbl.Parent = wrap
+
+	local sLbl = Instance.new("TextLabel")
+	sLbl.Size = UDim2.new(1, 0, 0, 14)
+	sLbl.Position = UDim2.fromOffset(0, 18)
+	sLbl.BackgroundTransparency = 1
+	sLbl.Font = Enum.Font.GothamMedium
+	sLbl.Text = subtitle
+	sLbl.TextColor3 = th.muted
+	sLbl.TextSize = 11
+	sLbl.TextXAlignment = Enum.TextXAlignment.Left
+	sLbl.ZIndex = 21
+	sLbl.Parent = wrap
+
+	table.insert(Client.ThemeListeners, function(newTh)
+		hLbl.TextColor3 = newTh.bright
+		sLbl.TextColor3 = newTh.muted
+	end)
+	return wrap
+end
+
+local function makeMiniSwitch(parent, pos, initialVal, onToggle)
+	local isOn = initialVal == true
+	local sw = Instance.new("TextButton")
+	sw.Name = randName(6)
+	sw.Size = UDim2.fromOffset(38, 20)
+	sw.Position = pos
+	sw.BorderSizePixel = 0
+	sw.AutoButtonColor = false
+	sw.Text = ""
+	sw.ZIndex = 24
+	sw.Parent = parent
+
+	local sc = Instance.new("UICorner")
+	sc.CornerRadius = UDim.new(0, 99)
+	sc.Parent = sw
+
+	local ss = Instance.new("UIStroke")
+	ss.Thickness = 1
+	ss.Transparency = 0.52
+	ss.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+	ss.Parent = sw
+
+	local knob = Instance.new("Frame")
+	knob.Size = UDim2.fromOffset(14, 14)
+	knob.BackgroundColor3 = Color3.fromRGB(246, 240, 255)
+	knob.BorderSizePixel = 0
+	knob.ZIndex = 25
+	knob.Parent = sw
+	local kc = Instance.new("UICorner")
+	kc.CornerRadius = UDim.new(0, 99)
+	kc.Parent = knob
+
+	local function paint(animate)
+		local th = getTheme()
+		local bg = isOn and th.accent or Color3.fromRGB(40, 34, 58)
+		local p = isOn and UDim2.fromOffset(21, 3) or UDim2.fromOffset(3, 3)
+		ss.Color = isOn and th.bright or th.muted
+		if animate then
+			Client.TrackTween(TweenService:Create(sw, TweenInfo.new(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), { BackgroundColor3 = bg }))
+			Client.TrackTween(TweenService:Create(knob, TweenInfo.new(0.18, Enum.EasingStyle.Back, Enum.EasingDirection.Out), { Position = p }))
+		else
+			sw.BackgroundColor3 = bg
+			knob.Position = p
+		end
+	end
+
+	paint(false)
+	table.insert(Client.ThemeListeners, function() paint(false) end)
+
+	Client.Bind(sw.MouseButton1Click, function()
+		isOn = not isOn
+		paint(true)
+		if onToggle then onToggle(isOn) end
+	end)
+
+	return sw, function(val)
+		isOn = val == true
+		paint(true)
+	end
+end
+
+-- Compact toggle row bound straight to Client.State[stateKey]
+local function addStateToggleRow(container, order, title, stateKey, onAfterToggle)
+	local row = Instance.new("Frame")
+	row.LayoutOrder = order
+	row.Size = UDim2.new(1, 0, 0, 26)
+	row.BackgroundTransparency = 1
+	row.ZIndex = 22
+	row.Parent = container
+
+	local lbl = Instance.new("TextLabel")
+	lbl.Size = UDim2.new(1, -46, 1, 0)
+	lbl.Position = UDim2.fromOffset(2, 0)
+	lbl.BackgroundTransparency = 1
+	lbl.Font = Enum.Font.GothamMedium
+	lbl.Text = title
+	lbl.TextSize = 12
+	lbl.TextXAlignment = Enum.TextXAlignment.Left
+	lbl.TextTruncate = Enum.TextTruncate.AtEnd
+	lbl.ZIndex = 22
+	lbl.Parent = row
+
+	local _, setSw = makeMiniSwitch(row, UDim2.new(1, -38, 0.5, -10), Client.State[stateKey], function(val)
+		Client.State[stateKey] = val
+		if onAfterToggle then onAfterToggle(val) end
+	end)
+
+	table.insert(Client.ThemeListeners, function(th)
+		lbl.TextColor3 = th.bright
+	end)
+	table.insert(Client.StateListeners, function()
+		setSw(Client.State[stateKey])
+	end)
+end
+
+-- Compact slider row bound straight to Client.State[stateKey]
+local function addStateSliderRow(container, order, title, stateKey, minVal, maxVal, suffix)
+	local wrap = Instance.new("Frame")
+	wrap.LayoutOrder = order
+	wrap.Size = UDim2.new(1, 0, 0, 36)
+	wrap.BackgroundTransparency = 1
+	wrap.ZIndex = 22
+	wrap.Parent = container
+
+	local lbl = Instance.new("TextLabel")
+	lbl.Size = UDim2.new(0.65, 0, 0, 16)
+	lbl.Position = UDim2.fromOffset(2, 0)
+	lbl.BackgroundTransparency = 1
+	lbl.Font = Enum.Font.GothamMedium
+	lbl.Text = title
+	lbl.TextSize = 11
+	lbl.TextXAlignment = Enum.TextXAlignment.Left
+	lbl.ZIndex = 22
+	lbl.Parent = wrap
+
+	local valLbl = Instance.new("TextLabel")
+	valLbl.Size = UDim2.new(0.35, -2, 0, 16)
+	valLbl.Position = UDim2.new(0.65, 0, 0, 0)
+	valLbl.BackgroundTransparency = 1
+	applyMonoFont(valLbl, 11)
+	valLbl.Text = tostring(Client.State[stateKey]) .. (suffix or "")
+	valLbl.TextXAlignment = Enum.TextXAlignment.Right
+	valLbl.ZIndex = 22
+	valLbl.Parent = wrap
+
+	local hit = Instance.new("TextButton")
+	hit.Size = UDim2.new(1, -4, 0, 16)
+	hit.Position = UDim2.fromOffset(2, 18)
+	hit.BackgroundTransparency = 1
+	hit.Text = ""
+	hit.AutoButtonColor = false
+	hit.ZIndex = 24
+	hit.Parent = wrap
+
+	local bar = Instance.new("Frame")
+	bar.Size = UDim2.new(1, 0, 0, 3)
+	bar.Position = UDim2.new(0, 0, 0.5, -1)
+	bar.BackgroundColor3 = Color3.fromRGB(36, 30, 54)
+	bar.BorderSizePixel = 0
+	bar.ZIndex = 22
+	bar.Parent = hit
+	local bc = Instance.new("UICorner")
+	bc.CornerRadius = UDim.new(0, 99)
+	bc.Parent = bar
+
+	local barFill = Instance.new("Frame")
+	barFill.Size = UDim2.fromScale(0, 1)
+	barFill.BorderSizePixel = 0
+	barFill.ZIndex = 23
+	barFill.Parent = bar
+	local fc = Instance.new("UICorner")
+	fc.CornerRadius = UDim.new(0, 99)
+	fc.Parent = barFill
+
+	local knob = Instance.new("Frame")
+	knob.Size = UDim2.fromOffset(10, 10)
+	knob.AnchorPoint = Vector2.new(0.5, 0.5)
+	knob.Position = UDim2.fromScale(0, 0.5)
+	knob.BackgroundColor3 = Color3.fromRGB(246, 240, 255)
+	knob.BorderSizePixel = 0
+	knob.ZIndex = 24
+	knob.Parent = bar
+	local kc = Instance.new("UICorner")
+	kc.CornerRadius = UDim.new(0, 99)
+	kc.Parent = knob
+
+	local function refreshVisual()
+		local v = math.clamp(Client.State[stateKey] or minVal, minVal, maxVal)
+		local frac = (v - minVal) / math.max(1, maxVal - minVal)
+		barFill.Size = UDim2.fromScale(frac, 1)
+		knob.Position = UDim2.fromScale(frac, 0.5)
+		valLbl.Text = tostring(v) .. (suffix or "")
+	end
+
+	local sliding = false
+	local function setFromX(absX)
+		local bx = bar.AbsolutePosition.X
+		local bw = math.max(1, bar.AbsoluteSize.X)
+		local frac = math.clamp((absX - bx) / bw, 0, 1)
+		Client.State[stateKey] = math.floor(minVal + frac * (maxVal - minVal) + 0.5)
+		refreshVisual()
+	end
+
+	Client.Bind(hit.InputBegan, function(inp)
+		if inp.UserInputType == Enum.UserInputType.MouseButton1 then
+			sliding = true
+			setFromX(inp.Position.X)
+		end
+	end)
+	Client.Bind(UserInputService.InputChanged, function(inp)
+		if sliding and inp.UserInputType == Enum.UserInputType.MouseMovement then
+			setFromX(inp.Position.X)
+		end
+	end)
+	Client.Bind(UserInputService.InputEnded, function(inp)
+		if inp.UserInputType == Enum.UserInputType.MouseButton1 then
+			sliding = false
+		end
+	end)
+
+	refreshVisual()
+	table.insert(Client.ThemeListeners, function(th)
+		lbl.TextColor3 = th.mid
+		valLbl.TextColor3 = th.neon
+		barFill.BackgroundColor3 = th.accent
+	end)
+	table.insert(Client.StateListeners, refreshVisual)
+end
+
+-- Compact option cycle button bound straight to Client.State[stateKey]
+local function addStateCycleRow(container, order, title, stateKey, options)
+	local row = Instance.new("Frame")
+	row.LayoutOrder = order
+	row.Size = UDim2.new(1, 0, 0, 26)
+	row.BackgroundTransparency = 1
+	row.ZIndex = 22
+	row.Parent = container
+
+	local lbl = Instance.new("TextLabel")
+	lbl.Size = UDim2.new(0.52, 0, 1, 0)
+	lbl.Position = UDim2.fromOffset(2, 0)
+	lbl.BackgroundTransparency = 1
+	lbl.Font = Enum.Font.GothamMedium
+	lbl.Text = title
+	lbl.TextSize = 12
+	lbl.TextXAlignment = Enum.TextXAlignment.Left
+	lbl.ZIndex = 22
+	lbl.Parent = row
+
+	local cycBtn = Instance.new("TextButton")
+	cycBtn.Size = UDim2.new(0.46, 0, 0, 22)
+	cycBtn.Position = UDim2.new(0.54, 0, 0.5, -11)
+	cycBtn.BorderSizePixel = 0
+	cycBtn.AutoButtonColor = false
+	applyMonoFont(cycBtn, 11)
+	cycBtn.ZIndex = 24
+	cycBtn.Parent = row
+	local cc = Instance.new("UICorner")
+	cc.CornerRadius = UDim.new(0, 6)
+	cc.Parent = cycBtn
+	local cs = Instance.new("UIStroke")
+	cs.Thickness = 1
+	cs.Transparency = 0.45
+	cs.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+	cs.Parent = cycBtn
+
+	local function refreshText()
+		local cur = Client.State[stateKey]
+		local label = tostring(cur)
+		for _, opt in ipairs(options) do
+			if opt.value == cur then label = opt.label break end
+		end
+		cycBtn.Text = label
+	end
+
+	Client.Bind(cycBtn.MouseButton1Click, function()
+		local cur = Client.State[stateKey]
+		local nextIdx = 1
+		for i, opt in ipairs(options) do
+			if opt.value == cur then
+				nextIdx = (i % #options) + 1
+				break
+			end
+		end
+		Client.State[stateKey] = options[nextIdx].value
+		refreshText()
+	end)
+
+	refreshText()
+	table.insert(Client.ThemeListeners, function(th)
+		lbl.TextColor3 = th.bright
+		cycBtn.BackgroundColor3 = th.tabActiveBg
+		cycBtn.BackgroundTransparency = 0.28
+		cycBtn.TextColor3 = th.bright
+		cs.Color = th.neon
+	end)
+	table.insert(Client.StateListeners, refreshText)
+end
+
+local function makeModuleGroupCard(parent, order, widthUDim, headerTitle)
+	local card = makeCard(parent, order, widthUDim, 0)
+	card.AutomaticSize = Enum.AutomaticSize.Y
+	local pad = Instance.new("UIPadding")
+	pad.PaddingLeft = UDim.new(0, 11)
+	pad.PaddingRight = UDim.new(0, 11)
+	pad.PaddingTop = UDim.new(0, 9)
+	pad.PaddingBottom = UDim.new(0, 9)
+	pad.Parent = card
+	local list = Instance.new("UIListLayout")
+	list.SortOrder = Enum.SortOrder.LayoutOrder
+	list.Padding = UDim.new(0, 4)
+	list.Parent = card
+
+	local hdr = Instance.new("TextLabel")
+	hdr.LayoutOrder = 0
+	hdr.Size = UDim2.new(1, 0, 0, 18)
+	hdr.BackgroundTransparency = 1
+	hdr.Font = Enum.Font.GothamBold
+	hdr.Text = headerTitle
+	hdr.TextSize = 12
+	hdr.TextXAlignment = Enum.TextXAlignment.Left
+	hdr.ZIndex = 22
+	hdr.Parent = card
+
+	local div = Instance.new("Frame")
+	div.LayoutOrder = 1
+	div.Size = UDim2.new(1, 0, 0, 1)
+	div.BackgroundTransparency = 0.72
+	div.BorderSizePixel = 0
+	div.ZIndex = 22
+	div.Parent = card
+
+	table.insert(Client.ThemeListeners, function(th)
+		hdr.TextColor3 = th.neon
+		div.BackgroundColor3 = th.neon
+	end)
+	return card
+end
+
+local function addActionRow(container, order, title, btnText, onClick)
+	local row = Instance.new("Frame")
+	row.LayoutOrder = order
+	row.Size = UDim2.new(1, 0, 0, 26)
+	row.BackgroundTransparency = 1
+	row.ZIndex = 22
+	row.Parent = container
+
+	local lbl = Instance.new("TextLabel")
+	lbl.Size = UDim2.new(1, -110, 1, 0)
+	lbl.Position = UDim2.fromOffset(2, 0)
+	lbl.BackgroundTransparency = 1
+	lbl.Font = Enum.Font.GothamMedium
+	lbl.Text = title
+	lbl.TextSize = 11
+	lbl.TextXAlignment = Enum.TextXAlignment.Left
+	lbl.TextTruncate = Enum.TextTruncate.AtEnd
+	lbl.ZIndex = 22
+	lbl.Parent = row
+
+	local actBtn = Instance.new("TextButton")
+	actBtn.Size = UDim2.fromOffset(102, 20)
+	actBtn.Position = UDim2.new(1, -104, 0.5, -10)
+	actBtn.BackgroundTransparency = 0.25
+	actBtn.BorderSizePixel = 0
+	actBtn.AutoButtonColor = false
+	actBtn.Font = Enum.Font.GothamBold
+	actBtn.Text = btnText
+	actBtn.TextSize = 10
+	actBtn.ZIndex = 23
+	actBtn.Parent = row
+	local ac = Instance.new("UICorner")
+	ac.CornerRadius = UDim.new(0, 6)
+	ac.Parent = actBtn
+	local as = Instance.new("UIStroke")
+	as.Thickness = 1
+	as.Transparency = 0.45
+	as.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+	as.Parent = actBtn
+
+	Client.Bind(actBtn.MouseButton1Click, function()
+		if onClick then onClick() end
+	end)
+
+	table.insert(Client.ThemeListeners, function(th)
+		lbl.TextColor3 = th.bright
+		actBtn.BackgroundColor3 = th.btnBg
+		actBtn.TextColor3 = th.bright
+		as.Color = th.neon
+	end)
+
+	return lbl, actBtn
+end
+
+-- ============================================================================
+-- 10. BUILD PAGES: READ | MAIN | VISUALS | MISC
+-- ============================================================================
+
+-- ---- 0. READ TAB (Clean Cozy Nyan Dev Note) ----
+do
+	local readPage = tabPages["read"]
+
+	local function makeAutoCard(parent, order, widthUDim)
+		local th = getTheme()
+		local card = Instance.new("Frame")
+		card.Name = randName(8)
+		card.LayoutOrder = order
+		card.Size = UDim2.new(widthUDim.Scale, widthUDim.Offset, 0, 0)
+		card.AutomaticSize = Enum.AutomaticSize.Y
+		card.BackgroundColor3 = th.cardBg
+		card.BackgroundTransparency = 0.34
+		card.BorderSizePixel = 0
+		card.ZIndex = 21
+		card.Parent = parent
+
+		local cc = Instance.new("UICorner")
+		cc.CornerRadius = UDim.new(0, 10)
+		cc.Parent = card
+
+		local cs = Instance.new("UIStroke")
+		cs.Color = th.neon
+		cs.Thickness = 1
+		cs.Transparency = 0.65
+		cs.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+		cs.Parent = card
+
+		table.insert(Client.ThemeListeners, function(newTh)
+			card.BackgroundColor3 = newTh.cardBg
+			cs.Color = newTh.neon
+		end)
+		return card
+	end
+
+	local headerCard = makeCard(readPage, 1, UDim.new(1, 0), 78)
+
+	local avatarFrame = Instance.new("Frame")
+	avatarFrame.Size = UDim2.fromOffset(58, 58)
+	avatarFrame.Position = UDim2.fromOffset(10, 10)
+	avatarFrame.BackgroundColor3 = Color3.fromRGB(22, 18, 36)
+	avatarFrame.BackgroundTransparency = 0.18
+	avatarFrame.ClipsDescendants = true
+	avatarFrame.BorderSizePixel = 0
+	avatarFrame.ZIndex = 22
+	avatarFrame.Parent = headerCard
+	local avc = Instance.new("UICorner")
+	avc.CornerRadius = UDim.new(0, 12)
+	avc.Parent = avatarFrame
+	local avs = Instance.new("UIStroke")
+	avs.Thickness = 1
+	avs.Transparency = 0.32
+	avs.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+	avs.Parent = avatarFrame
+
+	if glowTexture then
+		local avGlow = Instance.new("ImageLabel")
+		avGlow.Size = UDim2.fromScale(1, 1)
+		avGlow.Position = UDim2.fromOffset(0, 0)
+		avGlow.BackgroundTransparency = 1
+		avGlow.Image = glowTexture
+		avGlow.ImageTransparency = 0.38
+		avGlow.ZIndex = 22
+		avGlow.Parent = avatarFrame
+		local agc = Instance.new("UICorner")
+		agc.CornerRadius = UDim.new(0, 12)
+		agc.Parent = avGlow
+		table.insert(Client.ThemeListeners, function(th) avGlow.ImageColor3 = th.neon end)
+	end
+
+	if sheetAssets[1] then
+		local avImg = Instance.new("ImageLabel")
+		avImg.Size = UDim2.fromScale(1, 1)
+		avImg.Position = UDim2.fromOffset(0, 0)
+		avImg.BackgroundTransparency = 1
+		avImg.Image = sheetAssets[1]
+		avImg.ImageRectSize = Vector2.new(204, 204)
+		avImg.ImageRectOffset = Vector2.new(68, 6)
+		avImg.ScaleType = Enum.ScaleType.Stretch
+		avImg.ZIndex = 23
+		avImg.Parent = avatarFrame
+		local aic = Instance.new("UICorner")
+		aic.CornerRadius = UDim.new(0, 12)
+		aic.Parent = avImg
+	end
+
+	local noteTag = Instance.new("TextLabel")
+	noteTag.Size = UDim2.new(1, -92, 0, 16)
+	noteTag.Position = UDim2.fromOffset(80, 11)
+	noteTag.BackgroundTransparency = 1
+	applyMonoFont(noteTag, 11)
+	noteTag.Text = "\u{273F} KRONOS · by " .. Client.Info.Author
+	noteTag.TextXAlignment = Enum.TextXAlignment.Left
+	noteTag.ZIndex = 22
+	noteTag.Parent = headerCard
+
+	local noteTitle = Instance.new("TextLabel")
+	noteTitle.Size = UDim2.new(1, -92, 0, 20)
+	noteTitle.Position = UDim2.fromOffset(80, 28)
+	noteTitle.BackgroundTransparency = 1
+	noteTitle.Font = Enum.Font.GothamBold
+	noteTitle.Text = "Привет! Пара слов о нашем меню, ня~"
+	noteTitle.TextSize = 15
+	noteTitle.TextXAlignment = Enum.TextXAlignment.Left
+	noteTitle.ZIndex = 22
+	noteTitle.Parent = headerCard
+
+	local noteSub = Instance.new("TextLabel")
+	noteSub.Size = UDim2.new(1, -92, 0, 16)
+	noteSub.Position = UDim2.fromOffset(80, 50)
+	noteSub.BackgroundTransparency = 1
+	noteSub.Font = Enum.Font.GothamMedium
+	noteSub.Text = "Мя~ Небольшая записка от автора перед началом"
+	noteSub.TextSize = 11
+	noteSub.TextTruncate = Enum.TextTruncate.AtEnd
+	noteSub.TextXAlignment = Enum.TextXAlignment.Left
+	noteSub.ZIndex = 22
+	noteSub.Parent = headerCard
+
+	table.insert(Client.ThemeListeners, function(th)
+		avs.Color = th.neon
+		noteTag.TextColor3 = th.neon
+		noteTitle.TextColor3 = th.bright
+		noteSub.TextColor3 = th.muted
+	end)
+
+	local storyCard = makeAutoCard(readPage, 2, UDim.new(1, 0))
+	local sPad = Instance.new("UIPadding")
+	sPad.PaddingLeft = UDim.new(0, 12)
+	sPad.PaddingRight = UDim.new(0, 12)
+	sPad.PaddingTop = UDim.new(0, 10)
+	sPad.PaddingBottom = UDim.new(0, 10)
+	sPad.Parent = storyCard
+
+	local storyLbl = Instance.new("TextLabel")
+	storyLbl.Size = UDim2.new(1, 0, 0, 0)
+	storyLbl.AutomaticSize = Enum.AutomaticSize.Y
+	storyLbl.BackgroundTransparency = 1
+	storyLbl.Font = Enum.Font.GothamMedium
+	storyLbl.Text = "Привет, мур~ Решил оставить здесь пару простых слов об этом интерфейсе.\n\nВесь этот GUI я делал для души и как личный эксперимент. Мне просто хотелось попробовать собрать красивое, аккуратное и плавное меню с нуля, поиграться с дизайном и прокачать свои навыки. Здесь нет никакой цели кого-то задеть или спровоцировать — это просто маленькая история про интерес к созданию уютных вещей своими руками, ня~"
+	storyLbl.TextSize = 12
+	storyLbl.LineHeight = 1.30
+	storyLbl.TextWrapped = true
+	storyLbl.TextXAlignment = Enum.TextXAlignment.Left
+	storyLbl.TextYAlignment = Enum.TextYAlignment.Top
+	storyLbl.ZIndex = 22
+	storyLbl.Parent = storyCard
+	table.insert(Client.ThemeListeners, function(th) storyLbl.TextColor3 = th.mid end)
+
+	local function makePillarCard(parent, order, widthUDim, badgeTxt, bodyTxt)
+		local c = makeAutoCard(parent, order, widthUDim)
+		local cp = Instance.new("UIPadding")
+		cp.PaddingLeft = UDim.new(0, 11)
+		cp.PaddingRight = UDim.new(0, 11)
+		cp.PaddingTop = UDim.new(0, 9)
+		cp.PaddingBottom = UDim.new(0, 9)
+		cp.Parent = c
+		local cl = Instance.new("UIListLayout")
+		cl.SortOrder = Enum.SortOrder.LayoutOrder
+		cl.Padding = UDim.new(0, 4)
+		cl.Parent = c
+
+		local h = Instance.new("TextLabel")
+		h.LayoutOrder = 1
+		h.Size = UDim2.new(1, 0, 0, 16)
+		h.BackgroundTransparency = 1
+		h.Font = Enum.Font.GothamBold
+		h.Text = badgeTxt
+		h.TextSize = 12
+		h.TextXAlignment = Enum.TextXAlignment.Left
+		h.ZIndex = 22
+		h.Parent = c
+
+		local b = Instance.new("TextLabel")
+		b.LayoutOrder = 2
+		b.Size = UDim2.new(1, 0, 0, 0)
+		b.AutomaticSize = Enum.AutomaticSize.Y
+		b.BackgroundTransparency = 1
+		b.Font = Enum.Font.GothamMedium
+		b.Text = bodyTxt
+		b.TextSize = 11
+		b.LineHeight = 1.26
+		b.TextWrapped = true
+		b.TextXAlignment = Enum.TextXAlignment.Left
+		b.TextYAlignment = Enum.TextYAlignment.Top
+		b.ZIndex = 22
+		b.Parent = c
+
+		table.insert(Client.ThemeListeners, function(th)
+			h.TextColor3 = th.bright
+			b.TextColor3 = th.muted
+		end)
+		return c
+	end
+
+	local rowMid = Instance.new("Frame")
+	rowMid.LayoutOrder = 3
+	rowMid.Size = UDim2.new(1, 0, 0, 0)
+	rowMid.AutomaticSize = Enum.AutomaticSize.Y
+	rowMid.BackgroundTransparency = 1
+	rowMid.ZIndex = 20
+	rowMid.Parent = readPage
+
+	makePillarCard(rowMid, 1, UDim.new(0.5, -4), "\u{273F} Порядок внутри",
+		"Всё меню разделено на аккуратные части: темы, конфиги, анимации и кнопки не свалены в одну кучу, поэтому его легко дополнять, ня~")
+	local midC2 = makePillarCard(rowMid, 2, UDim.new(0.5, -4), "\u{273F} Уют и плавность",
+		"Хотелось уйти от тяжёлых менюшек. Мягкое матовое стекло, тонкие линии, приятные шрифты и плавные переходы — чтобы глазу было комфортно.")
+	midC2.Position = UDim2.new(0.5, 4, 0, 0)
+
+	local rowBot = Instance.new("Frame")
+	rowBot.LayoutOrder = 4
+	rowBot.Size = UDim2.new(1, 0, 0, 0)
+	rowBot.AutomaticSize = Enum.AutomaticSize.Y
+	rowBot.BackgroundTransparency = 1
+	rowBot.ZIndex = 20
+	rowBot.Parent = readPage
+
+	makePillarCard(rowBot, 1, UDim.new(0.45, -4), "\u{273F} Всё под себя",
+		"Темы оформления и удобные конфиги сделаны так, чтобы каждый настроил цвет и вид меню под своё настроение без лишней возни.")
+	local botC2 = makePillarCard(rowBot, 2, UDim.new(0.55, -4), "\u{273F} Мур~ Спасибо!",
+		"Относитесь к этому проще — это просто пет-проект, в который вложено много времени и бессонных ночей ради красивого результата. Спасибо за поддержку, ня~")
+	botC2.Position = UDim2.new(0.45, 4, 0, 0)
+end
+
+local Engine = {}
+
+-- ---- 1. MAIN TAB (BABFT: FARM, CHESTS, WALK ON WATER, FLY, BOAT FLY, INF JUMP) ----
+do
+	local mainPage = tabPages["main"]
+	makeSectionHeader(mainPage, 1, "Build A Boat", "Авто-фарм 10 этапов, ТП к сундуку, ходьба по воде, флай, Boat Fly и авто-стройка")
+
+	local mainCols = Instance.new("Frame")
+	mainCols.LayoutOrder = 2
+	mainCols.Size = UDim2.new(1, 0, 0, 0)
+	mainCols.AutomaticSize = Enum.AutomaticSize.Y
+	mainCols.BackgroundTransparency = 1
+	mainCols.ZIndex = 20
+	mainCols.Parent = mainPage
+
+	local mLeft = Instance.new("Frame")
+	mLeft.Size = UDim2.new(0.5, -4, 0, 0)
+	mLeft.AutomaticSize = Enum.AutomaticSize.Y
+	mLeft.BackgroundTransparency = 1
+	mLeft.ZIndex = 20
+	mLeft.Parent = mainCols
+	local mlList = Instance.new("UIListLayout")
+	mlList.SortOrder = Enum.SortOrder.LayoutOrder
+	mlList.Padding = UDim.new(0, 8)
+	mlList.Parent = mLeft
+
+	local mRight = Instance.new("Frame")
+	mRight.Size = UDim2.new(0.5, -4, 0, 0)
+	mRight.Position = UDim2.new(0.5, 4, 0, 0)
+	mRight.AutomaticSize = Enum.AutomaticSize.Y
+	mRight.BackgroundTransparency = 1
+	mRight.ZIndex = 20
+	mRight.Parent = mainCols
+	local mrList = Instance.new("UIListLayout")
+	mrList.SortOrder = Enum.SortOrder.LayoutOrder
+	mrList.Padding = UDim.new(0, 8)
+	mrList.Parent = mRight
+
+	-- Left Column: Gold Farm & Instant Chest & Shop
+	local farmCard = makeModuleGroupCard(mLeft, 1, UDim.new(1, 0), "\u{273F} Авто-Фарм и Сундук")
+
+	local goldRow = Instance.new("Frame")
+	goldRow.LayoutOrder = 2
+	goldRow.Size = UDim2.new(1, 0, 0, 20)
+	goldRow.BackgroundTransparency = 1
+	goldRow.ZIndex = 22
+	goldRow.Parent = farmCard
+	local goldLbl = Instance.new("TextLabel")
+	goldLbl.Size = UDim2.new(1, -4, 1, 0)
+	goldLbl.Position = UDim2.fromOffset(2, 0)
+	goldLbl.BackgroundTransparency = 1
+	applyMonoFont(goldLbl, 11)
+	goldLbl.Text = "Золото: ... | За сессию: +0"
+	goldLbl.TextXAlignment = Enum.TextXAlignment.Left
+	goldLbl.ZIndex = 22
+	goldLbl.Parent = goldRow
+	Engine.goldStatsLabel = goldLbl
+	table.insert(Client.ThemeListeners, function(th) goldLbl.TextColor3 = th.neon end)
+
+	addStateToggleRow(farmCard, 3, "Авто-Фарм (Все 10 этапов)", "autoFarmGold", function(on)
+		if not on and Engine.stopFarmStabilizer then Engine.stopFarmStabilizer() end
+	end)
+	addStateSliderRow(farmCard, 4, "Скорость этапа (x0.1s)", "farmStageDelay", 6, 20, "")
+	addActionRow(farmCard, 5, "ТП к Золотому Сундуку", "К сундуку", function()
+		if Engine.instantChestRun then Engine.instantChestRun() end
+	end)
+	addActionRow(farmCard, 6, "Забрать золото (Claim)", "Claim", function()
+		if Engine.claimGold then Engine.claimGold() end
+	end)
+	addStateToggleRow(farmCard, 7, "Anti-AFK защита", "antiAfk")
+	addStateCycleRow(farmCard, 8, "Сундук (Магазин)", "chestType", {
+		{ value = "Common Chest", label = "Common" },
+		{ value = "Uncommon Chest", label = "Uncommon" },
+		{ value = "Rare Chest", label = "Rare" },
+		{ value = "Epic Chest", label = "Epic" },
+		{ value = "Legendary Chest", label = "Legendary" },
+	})
+	addStateToggleRow(farmCard, 9, "Авто-покупка сундуков", "autoBuyChest")
+
+	-- Right Column: Walk on Water, Fly, Inf Jump, Boat Fly, Click TP
+	local moveCard = makeModuleGroupCard(mRight, 1, UDim.new(1, 0), "\u{273F} Вода, Полёт и Креатив")
+	addStateToggleRow(moveCard, 2, "Ходьба по воде (Water Bridge)", "walkOnWater", function(on)
+		if Engine.applyWalkOnWater then Engine.applyWalkOnWater(on) end
+	end)
+	addStateToggleRow(moveCard, 3, "Полёт / Fly (Клавиша F)", "flyEnabled", function(on)
+		if not on and Engine.stopFly then Engine.stopFly() end
+	end)
+	addStateSliderRow(moveCard, 4, "Скорость полёта", "flySpeed", 20, 160, "")
+	addStateToggleRow(moveCard, 5, "Бесконечный прыжок", "infJump")
+	addStateToggleRow(moveCard, 6, "Полёт на корабле / Boat Fly (V)", "boatFly", function(on)
+		if not on and Engine.stopBoatFly then Engine.stopBoatFly() end
+	end)
+	addStateSliderRow(moveCard, 7, "Скорость Boat Fly", "boatFlySpeed", 25, 180, "")
+	addStateToggleRow(moveCard, 8, "Анти-Рэгдолл (No Ragdoll)", "antiRagdoll")
+	addStateToggleRow(moveCard, 9, "Ctrl + Click Телепорт", "clickTp")
+end
+
+-- ---- 2. VISUALS TAB (THEME ESP & CREATIVE BOAT CLONER + BLUEPRINTS) ----
+do
+	local visPage = tabPages["visuals"]
+	makeSectionHeader(visPage, 1, "ESP и Клонер Лодок", "Подсветка под тему клиента, голограмма и копирование чужих кораблей")
+
+	local visCols = Instance.new("Frame")
+	visCols.LayoutOrder = 2
+	visCols.Size = UDim2.new(1, 0, 0, 0)
+	visCols.AutomaticSize = Enum.AutomaticSize.Y
+	visCols.BackgroundTransparency = 1
+	visCols.ZIndex = 20
+	visCols.Parent = visPage
+
+	local vLeft = Instance.new("Frame")
+	vLeft.Size = UDim2.new(0.5, -4, 0, 0)
+	vLeft.AutomaticSize = Enum.AutomaticSize.Y
+	vLeft.BackgroundTransparency = 1
+	vLeft.ZIndex = 20
+	vLeft.Parent = visCols
+	local vlList = Instance.new("UIListLayout")
+	vlList.SortOrder = Enum.SortOrder.LayoutOrder
+	vlList.Padding = UDim.new(0, 8)
+	vlList.Parent = vLeft
+
+	local vRight = Instance.new("Frame")
+	vRight.Size = UDim2.new(0.5, -4, 0, 0)
+	vRight.Position = UDim2.new(0.5, 4, 0, 0)
+	vRight.AutomaticSize = Enum.AutomaticSize.Y
+	vRight.BackgroundTransparency = 1
+	vRight.ZIndex = 20
+	vRight.Parent = visCols
+	local vrList = Instance.new("UIListLayout")
+	vrList.SortOrder = Enum.SortOrder.LayoutOrder
+	vrList.Padding = UDim.new(0, 8)
+	vrList.Parent = vRight
+
+	local worldCard = makeModuleGroupCard(vLeft, 1, UDim.new(1, 0), "\u{273F} ESP и Карта (Цвет темы)")
+	addStateToggleRow(worldCard, 2, "ESP Игроков (Рамки + Команда)", "espPlayers")
+	addStateToggleRow(worldCard, 3, "Chams Игроков (Неон)", "espChams")
+	addStateToggleRow(worldCard, 4, "Луч до Золотого Сундука", "chestBeam")
+	addStateToggleRow(worldCard, 5, "Анти-Темнота в пещерах", "antiDarkness", function(on)
+		if Engine.applyAntiDarkness then Engine.applyAntiDarkness(on) end
+	end)
+	addStateToggleRow(worldCard, 6, "Fullbright (Макс. яркость)", "fullbright", function(on)
+		if Engine.applyFullbright then Engine.applyFullbright(on) end
+	end)
+
+	-- Right Column: Creative Boat Cloner & Ghost Hologram & Presets
+	local studioCard = makeModuleGroupCard(vRight, 1, UDim.new(1, 0), "\u{273F} Клонер Лодок и Авто-Стройка")
+
+	local statusRow = Instance.new("Frame")
+	statusRow.LayoutOrder = 2
+	statusRow.Size = UDim2.new(1, 0, 0, 20)
+	statusRow.BackgroundTransparency = 1
+	statusRow.ZIndex = 22
+	statusRow.Parent = studioCard
+	local statusLbl = Instance.new("TextLabel")
+	statusLbl.Size = UDim2.new(1, -4, 1, 0)
+	statusLbl.Position = UDim2.fromOffset(2, 0)
+	statusLbl.BackgroundTransparency = 1
+	applyMonoFont(statusLbl, 10)
+	statusLbl.Text = "Статус: готов к стройке"
+	statusLbl.TextXAlignment = Enum.TextXAlignment.Left
+	statusLbl.TextTruncate = Enum.TextTruncate.AtEnd
+	statusLbl.ZIndex = 22
+	statusLbl.Parent = statusRow
+	Engine.buildStatusLbl = statusLbl
+	table.insert(Client.ThemeListeners, function(th) statusLbl.TextColor3 = th.neon end)
+
+	local tgtLbl = addActionRow(studioCard, 3, "Цель: поиск...", "Сменить", function()
+		if Engine.cycleBoatTarget then Engine.cycleBoatTarget() end
+	end)
+	Engine.targetBoatLbl = tgtLbl
+
+	addStateToggleRow(studioCard, 4, "Голограмма-чертеж на базе", "hologramPreview", function(on)
+		if Engine.updateHologram then Engine.updateHologram(on) end
+	end)
+	addActionRow(studioCard, 5, "Скопировать лодку на базу", "Клонировать", function()
+		if Engine.cloneTargetBoat then Engine.cloneTargetBoat() end
+	end)
+	addActionRow(studioCard, 6, "Осмотреть лодку цели", "ТП к цели", function()
+		if Engine.tpToTargetBoat then Engine.tpToTargetBoat() end
+	end)
+	addStateCycleRow(studioCard, 7, "Макет постройки", "buildPreset", {
+		{ value = "FarmRaft", label = "Платформа" },
+		{ value = "Heart",    label = "Сердце" },
+		{ value = "Tower",    label = "Башня" },
+	})
+	addActionRow(studioCard, 8, "Авто-постройка макета", "Построить", function()
+		if Engine.buildPresetBlueprint then Engine.buildPresetBlueprint() end
+	end)
+	addActionRow(studioCard, 9, "Очистить все свои блоки", "Очистить", function()
+		if Engine.clearMyPlot then Engine.clearMyPlot() end
+	end)
+end
+
+-- ---- 3. MISC TAB (2-COLUMN COMPACT MINI CARDS + MICRO THEME PICKER) ----
+local miscSubAura, miscSubFillGrad, miscSubStrokeGrad, miscSubStar, miscSubTextGrad = nil, nil, nil, nil, nil
+local setMuteSwitchUI, setNeonSwitchUI = nil, nil
+local fpsStatusLabel = nil
+local refreshConfigListUI = nil
+local toggleThemePicker = nil
+
+do
+	local miscPage = tabPages["misc"]
+	makeSectionHeader(miscPage, 1, "Настройки и конфиги", "Компактное управление темой, звуком и профилем")
+
+	local colsRow = Instance.new("Frame")
+	colsRow.Name = randName(8)
+	colsRow.LayoutOrder = 2
+	colsRow.Size = UDim2.new(1, 0, 0, 0)
+	colsRow.AutomaticSize = Enum.AutomaticSize.Y
+	colsRow.BackgroundTransparency = 1
+	colsRow.ZIndex = 20
+	colsRow.Parent = miscPage
+
+	local leftCol = Instance.new("Frame")
+	leftCol.Size = UDim2.new(0.49, -4, 0, 0)
+	leftCol.AutomaticSize = Enum.AutomaticSize.Y
+	leftCol.BackgroundTransparency = 1
+	leftCol.ZIndex = 20
+	leftCol.Parent = colsRow
+
+	local leftList = Instance.new("UIListLayout")
+	leftList.SortOrder = Enum.SortOrder.LayoutOrder
+	leftList.Padding = UDim.new(0, 8)
+	leftList.Parent = leftCol
+
+	local rightCol = Instance.new("Frame")
+	rightCol.Size = UDim2.new(0.51, -4, 0, 0)
+	rightCol.Position = UDim2.new(0.49, 4, 0, 0)
+	rightCol.AutomaticSize = Enum.AutomaticSize.Y
+	rightCol.BackgroundTransparency = 1
+	rightCol.ZIndex = 20
+	rightCol.Parent = colsRow
+
+	local rightList = Instance.new("UIListLayout")
+	rightList.SortOrder = Enum.SortOrder.LayoutOrder
+	rightList.Padding = UDim.new(0, 8)
+	rightList.Parent = rightCol
+
+	-- 1. Profile Card
+	local subCard = makeCard(leftCol, 1, UDim.new(1, 0), 50)
+	local subTitleLbl = Instance.new("TextLabel")
+	subTitleLbl.Size = UDim2.new(1, -124, 0, 16)
+	subTitleLbl.Position = UDim2.fromOffset(12, 8)
+	subTitleLbl.BackgroundTransparency = 1
+	subTitleLbl.Font = Enum.Font.GothamBold
+	subTitleLbl.Text = "Подписка"
+	subTitleLbl.TextSize = 13
+	subTitleLbl.TextXAlignment = Enum.TextXAlignment.Left
+	subTitleLbl.ZIndex = 22
+	subTitleLbl.Parent = subCard
+
+	local subDescLbl = Instance.new("TextLabel")
+	subDescLbl.Size = UDim2.new(1, -124, 0, 14)
+	subDescLbl.Position = UDim2.fromOffset(12, 26)
+	subDescLbl.BackgroundTransparency = 1
+	subDescLbl.Font = Enum.Font.GothamMedium
+	subDescLbl.Text = "Бессрочная"
+	subDescLbl.TextSize = 11
+	subDescLbl.TextXAlignment = Enum.TextXAlignment.Left
+	subDescLbl.ZIndex = 22
+	subDescLbl.Parent = subCard
+
+	if glowTexture then
+		miscSubAura = Instance.new("ImageLabel")
+		miscSubAura.Size = UDim2.fromOffset(118, 42)
+		miscSubAura.Position = UDim2.new(1, -124, 0.5, -21)
+		miscSubAura.BackgroundTransparency = 1
+		miscSubAura.Image = glowTexture
+		miscSubAura.ImageTransparency = 0.44
+		miscSubAura.ZIndex = 21
+		miscSubAura.Parent = subCard
+	end
+
+	local miscPill = Instance.new("Frame")
+	miscPill.Size = UDim2.fromOffset(98, 24)
+	miscPill.Position = UDim2.new(1, -110, 0.5, -12)
+	miscPill.BackgroundColor3 = Color3.new(1, 1, 1)
+	miscPill.BackgroundTransparency = 0.14
+	miscPill.BorderSizePixel = 0
+	miscPill.ZIndex = 22
+	miscPill.Parent = subCard
+	local mpc = Instance.new("UICorner")
+	mpc.CornerRadius = UDim.new(0, 7)
+	mpc.Parent = miscPill
+
+	miscSubFillGrad = Instance.new("UIGradient")
+	miscSubFillGrad.Rotation = 12
+	miscSubFillGrad.Parent = miscPill
+
+	local mpStroke = Instance.new("UIStroke")
+	mpStroke.Color = Color3.new(1, 1, 1)
+	mpStroke.Thickness = 1
+	mpStroke.Transparency = 0.22
+	mpStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+	mpStroke.Parent = miscPill
+
+	miscSubStrokeGrad = Instance.new("UIGradient")
+	miscSubStrokeGrad.Rotation = 25
+	miscSubStrokeGrad.Parent = mpStroke
+
+	if starTexture then
+		miscSubStar = Instance.new("ImageLabel")
+		miscSubStar.Size = UDim2.fromOffset(13, 13)
+		miscSubStar.Position = UDim2.fromOffset(8, 5)
+		miscSubStar.BackgroundTransparency = 1
+		miscSubStar.Image = starTexture
+		miscSubStar.ZIndex = 23
+		miscSubStar.Parent = miscPill
+	end
+
+	local mpLabel = Instance.new("TextLabel")
+	mpLabel.Size = UDim2.new(1, -26, 1, 0)
+	mpLabel.Position = UDim2.fromOffset(24, 0)
+	mpLabel.BackgroundTransparency = 1
+	mpLabel.Font = Enum.Font.GothamBold
+	mpLabel.Text = "LIFETIME"
+	mpLabel.TextColor3 = Color3.new(1, 1, 1)
+	mpLabel.TextSize = 11
+	mpLabel.TextXAlignment = Enum.TextXAlignment.Left
+	mpLabel.ZIndex = 23
+	mpLabel.Parent = miscPill
+
+	miscSubTextGrad = Instance.new("UIGradient")
+	miscSubTextGrad.Parent = mpLabel
+
+	table.insert(Client.ThemeListeners, function(th)
+		subTitleLbl.TextColor3 = th.bright
+		subDescLbl.TextColor3 = th.muted
+	end)
+
+	-- 2. Mute Startup Voice Card
+	local muteCard = makeCard(leftCol, 2, UDim.new(1, 0), 48)
+	local mTitle = Instance.new("TextLabel")
+	mTitle.Size = UDim2.new(1, -60, 0, 16)
+	mTitle.Position = UDim2.fromOffset(12, 8)
+	mTitle.BackgroundTransparency = 1
+	mTitle.Font = Enum.Font.GothamBold
+	mTitle.Text = "Тихий запуск"
+	mTitle.TextSize = 13
+	mTitle.TextXAlignment = Enum.TextXAlignment.Left
+	mTitle.ZIndex = 22
+	mTitle.Parent = muteCard
+
+	local mDesc = Instance.new("TextLabel")
+	mDesc.Size = UDim2.new(1, -60, 0, 14)
+	mDesc.Position = UDim2.fromOffset(12, 26)
+	mDesc.BackgroundTransparency = 1
+	mDesc.Font = Enum.Font.GothamMedium
+	mDesc.Text = Client.State.muteStartupVoice and "Озвучка выключена" or "Голос на входе вкл."
+	mDesc.TextSize = 11
+	mDesc.TextXAlignment = Enum.TextXAlignment.Left
+	mDesc.TextTruncate = Enum.TextTruncate.AtEnd
+	mDesc.ZIndex = 22
+	mDesc.Parent = muteCard
+
+	local _, setMuteFn = makeMiniSwitch(muteCard, UDim2.new(1, -50, 0.5, -10), Client.State.muteStartupVoice, function(val)
+		Client.State.muteStartupVoice = val
+		mDesc.Text = val and "Озвучка выключена" or "Голос на входе вкл."
+		Client.SaveConfig(Client.ActiveConfigName)
+		if val and muteReactionSound and muteReactionSound.Parent then
+			if welcomeSound and welcomeSound.IsPlaying then pcall(function() welcomeSound:Stop() end) end
+			pcall(function()
+				muteReactionSound.TimePosition = 0
+				muteReactionSound:Play()
+			end)
+		end
+	end)
+	setMuteSwitchUI = function(v)
+		setMuteFn(v)
+		mDesc.Text = v and "Озвучка выключена" or "Голос на входе вкл."
+	end
+
+	table.insert(Client.ThemeListeners, function(th)
+		mTitle.TextColor3 = th.bright
+		mDesc.TextColor3 = th.muted
+	end)
+
+	-- 3. Micro Theme Picker Card
+	local themeBoxCard = makeCard(leftCol, 3, UDim.new(1, 0), 48)
+	themeBoxCard.ClipsDescendants = true
+
+	local themeHeaderBtn = Instance.new("TextButton")
+	themeHeaderBtn.Name = randName(6)
+	themeHeaderBtn.Size = UDim2.new(1, 0, 0, 48)
+	themeHeaderBtn.BackgroundTransparency = 1
+	themeHeaderBtn.AutoButtonColor = false
+	themeHeaderBtn.Text = ""
+	themeHeaderBtn.ZIndex = 23
+	themeHeaderBtn.Parent = themeBoxCard
+
+	local tTitle = Instance.new("TextLabel")
+	tTitle.Size = UDim2.new(0.44, 0, 0, 16)
+	tTitle.Position = UDim2.fromOffset(12, 8)
+	tTitle.BackgroundTransparency = 1
+	tTitle.Font = Enum.Font.GothamBold
+	tTitle.Text = "Тема цвета"
+	tTitle.TextSize = 13
+	tTitle.TextXAlignment = Enum.TextXAlignment.Left
+	tTitle.ZIndex = 22
+	tTitle.Parent = themeHeaderBtn
+
+	local tSub = Instance.new("TextLabel")
+	tSub.Size = UDim2.new(0.48, 0, 0, 14)
+	tSub.Position = UDim2.fromOffset(12, 26)
+	tSub.BackgroundTransparency = 1
+	tSub.Font = Enum.Font.GothamMedium
+	tSub.Text = "Нажми для выбора"
+	tSub.TextSize = 11
+	tSub.TextXAlignment = Enum.TextXAlignment.Left
+	tSub.ZIndex = 22
+	tSub.Parent = themeHeaderBtn
+
+	local activePill = Instance.new("Frame")
+	activePill.Size = UDim2.fromOffset(128, 24)
+	activePill.Position = UDim2.new(1, -138, 0.5, -12)
+	activePill.BackgroundTransparency = 0.25
+	activePill.BorderSizePixel = 0
+	activePill.ZIndex = 22
+	activePill.Parent = themeHeaderBtn
+	local apc = Instance.new("UICorner")
+	apc.CornerRadius = UDim.new(0, 7)
+	apc.Parent = activePill
+	local aps = Instance.new("UIStroke")
+	aps.Thickness = 1
+	aps.Transparency = 0.45
+	aps.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+	aps.Parent = activePill
+
+	local activeDots = {}
+	for dIdx = 1, 2 do
+		local dot = Instance.new("Frame")
+		dot.Size = UDim2.fromOffset(9, 9)
+		dot.Position = UDim2.fromOffset(7 + (dIdx - 1) * 11, 7)
+		dot.BorderSizePixel = 0
+		dot.ZIndex = 23
+		dot.Parent = activePill
+		local dc = Instance.new("UICorner")
+		dc.CornerRadius = UDim.new(0, 99)
+		dc.Parent = dot
+		activeDots[dIdx] = dot
+	end
+
+	local activeThemeNameLbl = Instance.new("TextLabel")
+	activeThemeNameLbl.Size = UDim2.new(1, -50, 1, 0)
+	activeThemeNameLbl.Position = UDim2.fromOffset(30, 0)
+	activeThemeNameLbl.BackgroundTransparency = 1
+	activeThemeNameLbl.Font = Enum.Font.GothamBold
+	activeThemeNameLbl.Text = getTheme().name
+	activeThemeNameLbl.TextSize = 11
+	activeThemeNameLbl.TextXAlignment = Enum.TextXAlignment.Left
+	activeThemeNameLbl.TextTruncate = Enum.TextTruncate.AtEnd
+	activeThemeNameLbl.ZIndex = 23
+	activeThemeNameLbl.Parent = activePill
+
+	local arrowLbl = Instance.new("TextLabel")
+	arrowLbl.Size = UDim2.fromOffset(18, 24)
+	arrowLbl.Position = UDim2.new(1, -20, 0, -1)
+	arrowLbl.BackgroundTransparency = 1
+	arrowLbl.Font = Enum.Font.SourceSansBold
+	arrowLbl.Text = "\u{273F}"
+	arrowLbl.TextSize = 13
+	arrowLbl.ZIndex = 23
+	arrowLbl.Parent = activePill
+
+	local drawerDiv = Instance.new("Frame")
+	drawerDiv.Size = UDim2.new(1, -20, 0, 1)
+	drawerDiv.Position = UDim2.fromOffset(10, 48)
+	drawerDiv.BackgroundTransparency = 0.72
+	drawerDiv.BorderSizePixel = 0
+	drawerDiv.ZIndex = 22
+	drawerDiv.Parent = themeBoxCard
+
+	local microListFrame = Instance.new("Frame")
+	microListFrame.Size = UDim2.new(1, -20, 0, 152)
+	microListFrame.Position = UDim2.fromOffset(10, 53)
+	microListFrame.BackgroundTransparency = 1
+	microListFrame.ZIndex = 22
+	microListFrame.Parent = themeBoxCard
+
+	local microRows = {}
+	for i, key in ipairs(Client.ThemeOrder) do
+		local pal = Client.Themes[key]
+		local rowBtn = Instance.new("TextButton")
+		rowBtn.Size = UDim2.new(1, 0, 0, 22)
+		rowBtn.Position = UDim2.fromOffset(0, (i - 1) * 24)
+		rowBtn.BorderSizePixel = 0
+		rowBtn.AutoButtonColor = false
+		rowBtn.Text = ""
+		rowBtn.ZIndex = 24
+		rowBtn.Parent = microListFrame
+		local rc = Instance.new("UICorner")
+		rc.CornerRadius = UDim.new(0, 6)
+		rc.Parent = rowBtn
+		local rs = Instance.new("UIStroke")
+		rs.Thickness = 1
+		rs.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+		rs.Parent = rowBtn
+
+		local swatches = { pal.swatch1, pal.swatch2, pal.swatch3 }
+		for sIdx, sCol in ipairs(swatches) do
+			local dot = Instance.new("Frame")
+			dot.Size = UDim2.fromOffset(8, 8)
+			dot.Position = UDim2.fromOffset(8 + (sIdx - 1) * 10, 7)
+			dot.BackgroundColor3 = sCol
+			dot.BorderSizePixel = 0
+			dot.ZIndex = 25
+			dot.Parent = rowBtn
+			local dc = Instance.new("UICorner")
+			dc.CornerRadius = UDim.new(0, 99)
+			dc.Parent = dot
+		end
+
+		local rName = Instance.new("TextLabel")
+		rName.Size = UDim2.new(1, -54, 1, 0)
+		rName.Position = UDim2.fromOffset(42, 0)
+		rName.BackgroundTransparency = 1
+		rName.Font = Enum.Font.GothamBold
+		rName.Text = pal.name
+		rName.TextColor3 = pal.bright
+		rName.TextSize = 11
+		rName.TextXAlignment = Enum.TextXAlignment.Left
+		rName.ZIndex = 25
+		rName.Parent = rowBtn
+
+		local checkMark = Instance.new("Frame")
+		checkMark.Size = UDim2.fromOffset(6, 6)
+		checkMark.Position = UDim2.new(1, -13, 0.5, -3)
+		checkMark.BackgroundColor3 = pal.neon
+		checkMark.BorderSizePixel = 0
+		checkMark.ZIndex = 25
+		checkMark.Parent = rowBtn
+		local cmc = Instance.new("UICorner")
+		cmc.CornerRadius = UDim.new(0, 99)
+		cmc.Parent = checkMark
+
+		microRows[key] = { btn = rowBtn, stroke = rs, dot = checkMark, pal = pal }
+
+		Client.Bind(rowBtn.MouseEnter, function() rowBtn.BackgroundTransparency = 0.15 end)
+		Client.Bind(rowBtn.MouseLeave, function()
+			rowBtn.BackgroundTransparency = (Client.State.theme == key) and 0.25 or 0.65
+		end)
+		Client.Bind(rowBtn.MouseButton1Click, function()
+			Client.ApplyTheme(key)
+			if toggleThemePicker then toggleThemePicker(false) end
+		end)
+	end
+
+	local neonRow = Instance.new("Frame")
+	neonRow.Size = UDim2.new(1, 0, 0, 24)
+	neonRow.Position = UDim2.fromOffset(0, 124)
+	neonRow.BackgroundTransparency = 1
+	neonRow.ZIndex = 23
+	neonRow.Parent = microListFrame
+
+	local nLbl = Instance.new("TextLabel")
+	nLbl.Size = UDim2.new(1, -48, 1, 0)
+	nLbl.Position = UDim2.fromOffset(4, 0)
+	nLbl.BackgroundTransparency = 1
+	nLbl.Font = Enum.Font.GothamMedium
+	nLbl.Text = "Неон по краям"
+	nLbl.TextSize = 11
+	nLbl.TextXAlignment = Enum.TextXAlignment.Left
+	nLbl.ZIndex = 24
+	nLbl.Parent = neonRow
+
+	local _, setNeonFn = makeMiniSwitch(neonRow, UDim2.new(1, -40, 0.5, -10), Client.State.neonBorderGlow, function(val)
+		Client.State.neonBorderGlow = val
+		neonRimStroke.Transparency = val and 0.79 or 1
+		botMeniscus.BackgroundTransparency = val and 0.16 or 1
+		Client.SaveConfig(Client.ActiveConfigName)
+	end)
+	setNeonSwitchUI = setNeonFn
+
+	local pickerOpen = false
+	toggleThemePicker = function(forceState)
+		if forceState ~= nil then pickerOpen = forceState else pickerOpen = not pickerOpen end
+		Client.TrackTween(TweenService:Create(arrowLbl, TweenInfo.new(0.20, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+			Rotation = pickerOpen and 180 or 0
+		}))
+		local targetH = pickerOpen and 208 or 48
+		Client.TrackTween(TweenService:Create(themeBoxCard, TweenInfo.new(0.20, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+			Size = UDim2.new(1, 0, 0, targetH)
+		}))
+	end
+	Client.ToggleThemePicker = toggleThemePicker
+
+	Client.Bind(themeHeaderBtn.MouseButton1Click, function() toggleThemePicker() end)
+
+	table.insert(Client.ThemeListeners, function(th)
+		tTitle.TextColor3 = th.bright
+		tSub.TextColor3 = th.muted
+		activePill.BackgroundColor3 = th.tabActiveBg
+		aps.Color = th.neon
+		activeDots[1].BackgroundColor3 = th.swatch1
+		activeDots[2].BackgroundColor3 = th.swatch2
+		activeThemeNameLbl.Text = th.name
+		activeThemeNameLbl.TextColor3 = th.bright
+		arrowLbl.TextColor3 = th.neon
+		drawerDiv.BackgroundColor3 = th.neon
+		nLbl.TextColor3 = th.mid
+
+		for k, item in pairs(microRows) do
+			local active = (k == Client.State.theme)
+			item.btn.BackgroundColor3 = active and item.pal.tabActiveBg or th.cardBg
+			item.btn.BackgroundTransparency = active and 0.25 or 0.65
+			item.stroke.Color = active and item.pal.neon or th.muted
+			item.stroke.Transparency = active and 0.25 or 0.85
+			item.dot.Visible = active
+		end
+	end)
+
+	-- 4. System & Unload Card
+	local perfCard = makeCard(leftCol, 4, UDim.new(1, 0), 50)
+	local perfTitle = Instance.new("TextLabel")
+	perfTitle.Size = UDim2.new(1, -96, 0, 16)
+	perfTitle.Position = UDim2.fromOffset(12, 8)
+	perfTitle.BackgroundTransparency = 1
+	perfTitle.Font = Enum.Font.GothamBold
+	perfTitle.Text = "Система"
+	perfTitle.TextSize = 12
+	perfTitle.TextXAlignment = Enum.TextXAlignment.Left
+	perfTitle.ZIndex = 22
+	perfTitle.Parent = perfCard
+
+	fpsStatusLabel = Instance.new("TextLabel")
+	fpsStatusLabel.Size = UDim2.new(1, -96, 0, 15)
+	fpsStatusLabel.Position = UDim2.fromOffset(12, 26)
+	fpsStatusLabel.BackgroundTransparency = 1
+	applyMonoFont(fpsStatusLabel, 12)
+	fpsStatusLabel.Text = "FPS: -- | -- MB"
+	fpsStatusLabel.TextXAlignment = Enum.TextXAlignment.Left
+	fpsStatusLabel.ZIndex = 22
+	fpsStatusLabel.Parent = perfCard
+
+	local unloadBtn = Instance.new("TextButton")
+	unloadBtn.Size = UDim2.fromOffset(72, 26)
+	unloadBtn.Position = UDim2.new(1, -82, 0.5, -13)
+	unloadBtn.BackgroundColor3 = StaticColors.DangerBg
+	unloadBtn.BackgroundTransparency = 0.22
+	unloadBtn.BorderSizePixel = 0
+	unloadBtn.AutoButtonColor = false
+	unloadBtn.Font = Enum.Font.GothamBold
+	unloadBtn.Text = "Unload"
+	unloadBtn.TextColor3 = StaticColors.DangerRed
+	unloadBtn.TextSize = 11
+	unloadBtn.ZIndex = 23
+	unloadBtn.Parent = perfCard
+	local uc = Instance.new("UICorner")
+	uc.CornerRadius = UDim.new(0, 7)
+	uc.Parent = unloadBtn
+	local us = Instance.new("UIStroke")
+	us.Color = StaticColors.DangerRed
+	us.Thickness = 1
+	us.Transparency = 0.42
+	us.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+	us.Parent = unloadBtn
+
+	Client.Bind(unloadBtn.MouseEnter, function() unloadBtn.BackgroundTransparency = 0.08 end)
+	Client.Bind(unloadBtn.MouseLeave, function() unloadBtn.BackgroundTransparency = 0.22 end)
+	Client.Bind(unloadBtn.MouseButton1Click, function() Client.Unload() end)
+
+	table.insert(Client.ThemeListeners, function(th)
+		perfTitle.TextColor3 = th.bright
+		fpsStatusLabel.TextColor3 = th.neon
+	end)
+
+	-- Right Column: Config Manager Card
+	local cfgCard = makeCard(rightCol, 1, UDim.new(1, 0), 220)
+
+	local cfgTopLbl = Instance.new("TextLabel")
+	cfgTopLbl.Size = UDim2.new(0.55, 0, 0, 16)
+	cfgTopLbl.Position = UDim2.fromOffset(12, 10)
+	cfgTopLbl.BackgroundTransparency = 1
+	cfgTopLbl.Font = Enum.Font.GothamBold
+	cfgTopLbl.Text = "Конфиги"
+	cfgTopLbl.TextSize = 13
+	cfgTopLbl.TextXAlignment = Enum.TextXAlignment.Left
+	cfgTopLbl.ZIndex = 22
+	cfgTopLbl.Parent = cfgCard
+
+	local activeCfgBadge = Instance.new("TextLabel")
+	activeCfgBadge.Size = UDim2.new(0.45, -12, 0, 18)
+	activeCfgBadge.Position = UDim2.new(0.55, 0, 0, 9)
+	activeCfgBadge.BackgroundTransparency = 1
+	applyMonoFont(activeCfgBadge, 12)
+	activeCfgBadge.Text = Client.ActiveConfigName
+	activeCfgBadge.TextXAlignment = Enum.TextXAlignment.Right
+	activeCfgBadge.TextTruncate = Enum.TextTruncate.AtEnd
+	activeCfgBadge.ZIndex = 22
+	activeCfgBadge.Parent = cfgCard
+
+	local nameBoxFrame = Instance.new("Frame")
+	nameBoxFrame.Size = UDim2.new(1, -90, 0, 28)
+	nameBoxFrame.Position = UDim2.fromOffset(12, 33)
+	nameBoxFrame.BackgroundColor3 = Color3.fromRGB(16, 13, 26)
+	nameBoxFrame.BackgroundTransparency = 0.24
+	nameBoxFrame.BorderSizePixel = 0
+	nameBoxFrame.ZIndex = 22
+	nameBoxFrame.Parent = cfgCard
+	local nbc = Instance.new("UICorner")
+	nbc.CornerRadius = UDim.new(0, 7)
+	nbc.Parent = nameBoxFrame
+	local nbs = Instance.new("UIStroke")
+	nbs.Thickness = 1
+	nbs.Transparency = 0.55
+	nbs.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+	nbs.Parent = nameBoxFrame
+
+	local nameBox = Instance.new("TextBox")
+	nameBox.Name = randName(6)
+	nameBox.Size = UDim2.new(1, -14, 1, 0)
+	nameBox.Position = UDim2.fromOffset(8, 0)
+	nameBox.BackgroundTransparency = 1
+	applyMonoFont(nameBox, 12)
+	nameBox.PlaceholderText = "EN name (A-Z, 0-9)"
+	nameBox.Text = ""
+	nameBox.ClearTextOnFocus = false
+	nameBox.TextXAlignment = Enum.TextXAlignment.Left
+	nameBox.ZIndex = 23
+	nameBox.Parent = nameBoxFrame
+
+	local function makeSmallCfgBtn(parent, pos, size, text)
+		local b = Instance.new("TextButton")
+		b.Size = size
+		b.Position = pos
+		b.BorderSizePixel = 0
+		b.AutoButtonColor = false
+		b.Font = Enum.Font.GothamBold
+		b.Text = text
+		b.TextSize = 11
+		b.ZIndex = 23
+		b.Parent = parent
+		local c = Instance.new("UICorner")
+		c.CornerRadius = UDim.new(0, 7)
+		c.Parent = b
+		local s = Instance.new("UIStroke")
+		s.Thickness = 1
+		s.Transparency = 0.45
+		s.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+		s.Parent = b
+
+		local function paint()
+			local th = getTheme()
+			b.BackgroundColor3 = th.tabActiveBg
+			b.BackgroundTransparency = 0.28
+			b.TextColor3 = th.bright
+			s.Color = th.neon
+		end
+		paint()
+		table.insert(Client.ThemeListeners, paint)
+		Client.Bind(b.MouseEnter, function() b.BackgroundTransparency = 0.10 end)
+		Client.Bind(b.MouseLeave, function() b.BackgroundTransparency = 0.28 end)
+		return b
+	end
+
+	local addBtn = makeSmallCfgBtn(cfgCard, UDim2.new(1, -72, 0, 33), UDim2.fromOffset(60, 28), "Add")
+
+	local listBox = Instance.new("ScrollingFrame")
+	listBox.Size = UDim2.new(1, -24, 0, 96)
+	listBox.Position = UDim2.fromOffset(12, 69)
+	listBox.BackgroundColor3 = Color3.fromRGB(14, 12, 23)
+	listBox.BackgroundTransparency = 0.30
+	listBox.BorderSizePixel = 0
+	listBox.ScrollBarThickness = 2
+	listBox.AutomaticCanvasSize = Enum.AutomaticSize.Y
+	listBox.CanvasSize = UDim2.fromOffset(0, 0)
+	listBox.ZIndex = 22
+	listBox.Parent = cfgCard
+	local lbc = Instance.new("UICorner")
+	lbc.CornerRadius = UDim.new(0, 7)
+	lbc.Parent = listBox
+	local lbs = Instance.new("UIStroke")
+	lbs.Thickness = 1
+	lbs.Transparency = 0.62
+	lbs.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+	lbs.Parent = listBox
+	local lbPad = Instance.new("UIPadding")
+	lbPad.PaddingTop = UDim.new(0, 4)
+	lbPad.PaddingBottom = UDim.new(0, 4)
+	lbPad.PaddingLeft = UDim.new(0, 4)
+	lbPad.PaddingRight = UDim.new(0, 6)
+	lbPad.Parent = listBox
+	local lbLayout = Instance.new("UIListLayout")
+	lbLayout.SortOrder = Enum.SortOrder.LayoutOrder
+	lbLayout.Padding = UDim.new(0, 3)
+	lbLayout.Parent = listBox
+
+	local cfgFeedbackLbl = Instance.new("TextLabel")
+	cfgFeedbackLbl.Size = UDim2.new(1, -24, 0, 14)
+	cfgFeedbackLbl.Position = UDim2.fromOffset(12, 168)
+	cfgFeedbackLbl.BackgroundTransparency = 1
+	applyMonoFont(cfgFeedbackLbl, 11)
+	cfgFeedbackLbl.Text = "EN only: A-Z, 0-9, _"
+	cfgFeedbackLbl.TextXAlignment = Enum.TextXAlignment.Left
+	cfgFeedbackLbl.TextTruncate = Enum.TextTruncate.AtEnd
+	cfgFeedbackLbl.ZIndex = 22
+	cfgFeedbackLbl.Parent = cfgCard
+
+	local actionsRow = Instance.new("Frame")
+	actionsRow.Size = UDim2.new(1, -24, 0, 26)
+	actionsRow.Position = UDim2.fromOffset(12, 185)
+	actionsRow.BackgroundTransparency = 1
+	actionsRow.ZIndex = 22
+	actionsRow.Parent = cfgCard
+
+	local loadBtn = makeSmallCfgBtn(actionsRow, UDim2.new(0, 0, 0, 0), UDim2.new(0.333, -4, 1, 0), "Load")
+	local saveBtn = makeSmallCfgBtn(actionsRow, UDim2.new(0.333, 2, 0, 0), UDim2.new(0.333, -4, 1, 0), "Save")
+	local delBtn  = makeSmallCfgBtn(actionsRow, UDim2.new(0.666, 4, 0, 0), UDim2.new(0.334, -4, 1, 0), "Delete")
+
+	local selectedCfgInList = Client.ActiveConfigName
+
+	local function setFeedback(msg, isWarn)
+		local th = getTheme()
+		cfgFeedbackLbl.Text = msg
+		cfgFeedbackLbl.TextColor3 = isWarn and StaticColors.DangerRed or th.mid
+	end
+
+	refreshConfigListUI = function()
+		for _, ch in ipairs(listBox:GetChildren()) do
+			if ch:IsA("TextButton") then ch:Destroy() end
+		end
+		local cfgs = Client.ListConfigs()
+		local th = getTheme()
+		local foundSelected = false
+		for i, cname in ipairs(cfgs) do
+			if cname == selectedCfgInList then foundSelected = true end
+			local row = Instance.new("TextButton")
+			row.LayoutOrder = i
+			row.Size = UDim2.new(1, 0, 0, 22)
+			row.BorderSizePixel = 0
+			row.AutoButtonColor = false
+			applyMonoFont(row, 12)
+			row.Text = "  " .. cname .. (cname == Client.ActiveConfigName and "  *" or "")
+			row.TextXAlignment = Enum.TextXAlignment.Left
+			row.ZIndex = 23
+			row.Parent = listBox
+			local rc = Instance.new("UICorner")
+			rc.CornerRadius = UDim.new(0, 5)
+			rc.Parent = row
+			local isSel = (cname == selectedCfgInList)
+			row.BackgroundColor3 = isSel and th.tabActiveBg or th.cardBg
+			row.BackgroundTransparency = isSel and 0.22 or 0.65
+			row.TextColor3 = isSel and th.bright or th.mid
+			row.MouseButton1Click:Connect(function()
+				selectedCfgInList = cname
+				refreshConfigListUI()
+			end)
+		end
+		if not foundSelected and #cfgs > 0 then selectedCfgInList = cfgs[1] end
+		activeCfgBadge.Text = Client.ActiveConfigName
+	end
+
+	local sanitizing = false
+	Client.Bind(nameBox:GetPropertyChangedSignal("Text"), function()
+		if sanitizing then return end
+		sanitizing = true
+		local raw = nameBox.Text
+		local clean = sanitizeConfigName(raw)
+		if raw ~= clean then
+			nameBox.Text = clean
+			setFeedback("Только EN буквы, цифры, _ и -", true)
+		else
+			setFeedback(clean ~= "" and ("Имя: " .. clean) or "EN only: A-Z, 0-9, _", false)
+		end
+		sanitizing = false
+	end)
+
+	Client.Bind(addBtn.MouseButton1Click, function()
+		local target = sanitizeConfigName(nameBox.Text)
+		if target == "" then
+			setFeedback("Введи английское имя (напр. HvH)", true)
+			return
+		end
+		local ok, msg = Client.SaveConfig(target)
+		if ok then
+			selectedCfgInList = target
+			nameBox.Text = ""
+			refreshConfigListUI()
+			setFeedback("Создан: " .. target, false)
+		else
+			setFeedback("Ошибка: " .. tostring(msg), true)
+		end
+	end)
+
+	Client.Bind(saveBtn.MouseButton1Click, function()
+		local target = selectedCfgInList ~= "" and selectedCfgInList or Client.ActiveConfigName
+		local ok, msg = Client.SaveConfig(target)
+		if ok then
+			refreshConfigListUI()
+			setFeedback("Сохранён: " .. target, false)
+		else
+			setFeedback("Ошибка: " .. tostring(msg), true)
+		end
+	end)
+
+	Client.Bind(loadBtn.MouseButton1Click, function()
+		if selectedCfgInList == "" then return end
+		local ok, msg = Client.LoadConfig(selectedCfgInList)
+		if ok then
+			Client.ApplyTheme(Client.State.theme)
+			if setMuteSwitchUI then setMuteSwitchUI(Client.State.muteStartupVoice) end
+			if setNeonSwitchUI then setNeonSwitchUI(Client.State.neonBorderGlow) end
+			neonRimStroke.Transparency = Client.State.neonBorderGlow and 0.79 or 1
+			botMeniscus.BackgroundTransparency = Client.State.neonBorderGlow and 0.16 or 1
+			for _, fn in ipairs(Client.StateListeners) do pcall(fn) end
+			if Client.SyncWindowFromState then Client.SyncWindowFromState() end
+			refreshConfigListUI()
+			setFeedback("Загружен: " .. selectedCfgInList, false)
+		else
+			setFeedback("Ошибка: " .. tostring(msg), true)
+		end
+	end)
+
+	Client.Bind(delBtn.MouseButton1Click, function()
+		if selectedCfgInList == "" then return end
+		local target = selectedCfgInList
+		local ok, msg = Client.DeleteConfig(target)
+		if ok then
+			selectedCfgInList = ""
+			refreshConfigListUI()
+			setFeedback("Удалён: " .. target, false)
+		else
+			setFeedback("Ошибка: " .. tostring(msg), true)
+		end
+	end)
+
+	table.insert(Client.ThemeListeners, function(th)
+		cfgTopLbl.TextColor3 = th.bright
+		activeCfgBadge.TextColor3 = th.muted
+		nbs.Color = th.neon
+		lbs.Color = th.neon
+		listBox.ScrollBarImageColor3 = th.scrollTint
+		nameBox.TextColor3 = th.bright
+		nameBox.PlaceholderColor3 = th.muted
+		cfgFeedbackLbl.TextColor3 = th.mid
+		refreshConfigListUI()
+	end)
+end
+
+-- ============================================================================
+-- 11. LIVE THEME APPLICATION
+-- ============================================================================
+function Client.ApplyTheme(themeKey)
+	local th = Client.Themes[themeKey] or Client.Themes.Lavender
+	Client.State.theme = th.key
+
+	backdrop.BackgroundColor3 = StaticColors.MatteBlack
+	glassWindow.BackgroundColor3 = th.glassBase
+	topMeniscus.BackgroundColor3 = th.strokeHi
+	botMeniscus.BackgroundColor3 = th.neon
+	sidebarLine.BackgroundColor3 = th.neon
+	if sideHeaderGlow then sideHeaderGlow.ImageColor3 = th.neon end
+	if subAura then subAura.ImageColor3 = th.neon end
+	if miscSubAura then miscSubAura.ImageColor3 = th.neon end
+
+	strokeGrad.Color = ColorSequence.new({
+		ColorSequenceKeypoint.new(0.00, th.strokeHi),
+		ColorSequenceKeypoint.new(0.35, th.strokeMid),
+		ColorSequenceKeypoint.new(0.72, th.strokeDim),
+		ColorSequenceKeypoint.new(1.00, th.strokeHi),
+	})
+
+	neonRimGrad.Color = ColorSequence.new({
+		ColorSequenceKeypoint.new(0.00, th.neon),
+		ColorSequenceKeypoint.new(0.30, th.strokeHi),
+		ColorSequenceKeypoint.new(0.60, th.accent),
+		ColorSequenceKeypoint.new(1.00, th.neon),
+	})
+
+	innerChamberGrad.Color = ColorSequence.new({
+		ColorSequenceKeypoint.new(0.00, th.strokeHi),
+		ColorSequenceKeypoint.new(0.50, th.strokeDim),
+		ColorSequenceKeypoint.new(1.00, th.neon),
+	})
+
+	glassBodyGrad.Color = ColorSequence.new({
+		ColorSequenceKeypoint.new(0.00, th.glassGradTop),
+		ColorSequenceKeypoint.new(0.48, th.glassGradMid),
+		ColorSequenceKeypoint.new(1.00, th.glassGradBot),
+	})
+
+	brandSub.TextColor3 = th.muted
+	kronosTitleGrad.Color = ColorSequence.new({
+		ColorSequenceKeypoint.new(0.00, th.swatch1),
+		ColorSequenceKeypoint.new(0.45, th.bright),
+		ColorSequenceKeypoint.new(0.78, th.neon),
+		ColorSequenceKeypoint.new(1.00, th.bright),
+	})
+
+	local pillFillSeq = ColorSequence.new({
+		ColorSequenceKeypoint.new(0.00, th.pillDark),
+		ColorSequenceKeypoint.new(0.28, th.pillMid),
+		ColorSequenceKeypoint.new(0.50, th.pillShine),
+		ColorSequenceKeypoint.new(0.72, th.pillMid),
+		ColorSequenceKeypoint.new(1.00, th.pillDark),
+	})
+	local pillStrokeSeq = ColorSequence.new({
+		ColorSequenceKeypoint.new(0.00, th.accent),
+		ColorSequenceKeypoint.new(0.35, th.strokeHi),
+		ColorSequenceKeypoint.new(0.65, th.neon),
+		ColorSequenceKeypoint.new(1.00, th.accent),
+	})
+	local pillTextSeq = ColorSequence.new({
+		ColorSequenceKeypoint.new(0.00, th.swatch1),
+		ColorSequenceKeypoint.new(0.50, th.bright),
+		ColorSequenceKeypoint.new(1.00, th.mid),
+	})
+
+	subFillGrad.Color = pillFillSeq
+	subStrokeGrad.Color = pillStrokeSeq
+	subTextGrad.Color = pillTextSeq
+	if miscSubFillGrad then miscSubFillGrad.Color = pillFillSeq end
+	if miscSubStrokeGrad then miscSubStrokeGrad.Color = pillStrokeSeq end
+	if miscSubTextGrad then miscSubTextGrad.Color = pillTextSeq end
+
+	for _, page in pairs(tabPages) do
+		page.ScrollBarImageColor3 = th.scrollTint
+	end
+
+	refreshTabsVisual()
+	for _, fn in ipairs(Client.ThemeListeners) do
+		pcall(fn, th)
+	end
+end
+
+-- ============================================================================
+-- 12. CORNER WITCH HAT
+-- ============================================================================
+local HAT_CELL_W, HAT_CELL_H = 308, 148
+local HAT_COLS = 3
+local HAT_PER_SHEET = 18
+local HAT_TOTAL_FRAMES = #hatFrontAssets * HAT_PER_SHEET
+local HAT_DRAW_W, HAT_DRAW_H = 290, 137
+local HAT_ANCHOR = Vector2.new(0.41, 0.66)
+local HAT_BASE_ROT = 30.5
+
+local hatBackHolder = Instance.new("Frame")
+hatBackHolder.Name = randName(8)
+hatBackHolder.Size = UDim2.fromOffset(HAT_DRAW_W, HAT_DRAW_H)
+hatBackHolder.AnchorPoint = HAT_ANCHOR
+hatBackHolder.Position = UDim2.fromOffset(Client.State.posX + Client.State.width, Client.State.posY)
+hatBackHolder.Rotation = HAT_BASE_ROT
+hatBackHolder.BackgroundTransparency = 1
+hatBackHolder.Visible = false
+hatBackHolder.ZIndex = 13
+hatBackHolder.Parent = backdrop
+
+local hatFrontHolder = Instance.new("Frame")
+hatFrontHolder.Name = randName(8)
+hatFrontHolder.Size = UDim2.fromOffset(HAT_DRAW_W, HAT_DRAW_H)
+hatFrontHolder.AnchorPoint = HAT_ANCHOR
+hatFrontHolder.Position = UDim2.fromOffset(Client.State.posX + Client.State.width, Client.State.posY)
+hatFrontHolder.Rotation = HAT_BASE_ROT
+hatFrontHolder.BackgroundTransparency = 1
+hatFrontHolder.Visible = false
+hatFrontHolder.ZIndex = 36
+hatFrontHolder.Parent = backdrop
+
+local hatBackLabels = {}
+local hatFrontLabels = {}
+
+for sIdx = 1, #hatFrontAssets do
+	local imgB = Instance.new("ImageLabel")
+	imgB.Name = randName(8)
+	imgB.Size = UDim2.fromScale(1, 1)
+	imgB.BackgroundTransparency = 1
+	imgB.Image = hatBackAssets[sIdx]
+	imgB.ImageRectSize = Vector2.new(HAT_CELL_W, HAT_CELL_H)
+	imgB.ImageRectOffset = Vector2.new(0, 0)
+	imgB.ImageTransparency = (sIdx == 1) and 0 or 1
+	imgB.ScaleType = Enum.ScaleType.Stretch
+	imgB.ZIndex = (sIdx == 1) and 14 or 13
+	imgB.Parent = hatBackHolder
+	hatBackLabels[sIdx] = imgB
+
+	local imgF = Instance.new("ImageLabel")
+	imgF.Name = randName(8)
+	imgF.Size = UDim2.fromScale(1, 1)
+	imgF.BackgroundTransparency = 1
+	imgF.Image = hatFrontAssets[sIdx]
+	imgF.ImageRectSize = Vector2.new(HAT_CELL_W, HAT_CELL_H)
+	imgF.ImageRectOffset = Vector2.new(0, 0)
+	imgF.ImageTransparency = (sIdx == 1) and 0 or 1
+	imgF.ScaleType = Enum.ScaleType.Stretch
+	imgF.ZIndex = (sIdx == 1) and 37 or 36
+	imgF.Parent = hatFrontHolder
+	hatFrontLabels[sIdx] = imgF
+end
+
+local hatHitbox = Instance.new("TextButton")
+hatHitbox.Name = randName(8)
+hatHitbox.Size = UDim2.fromScale(0.76, 0.72)
+hatHitbox.Position = UDim2.fromScale(0.16, 0.12)
+hatHitbox.BackgroundTransparency = 1
+hatHitbox.Text = ""
+hatHitbox.AutoButtonColor = false
+hatHitbox.Active = true
+hatHitbox.ZIndex = 45
+hatHitbox.Parent = hatFrontHolder
+
+local hatAnimStartedAt = nil
+local hatNextIdleAt = nil
+
+function Client.TriggerHat(playVoice)
+	hatAnimStartedAt = os.clock()
+	hatNextIdleAt = hatAnimStartedAt + 16.0
+	if playVoice ~= false and hatClickSound and hatClickSound.Parent then
+		pcall(function()
+			hatClickSound.TimePosition = 0
+			hatClickSound:Play()
+		end)
+	end
+end
+
+Client.Bind(hatHitbox.MouseButton1Click, function() Client.TriggerHat(true) end)
+
+-- ============================================================================
+-- 13. BOTTOM RESIZE BAR
+-- ============================================================================
+local bottomBar = Instance.new("Frame")
+bottomBar.Name = randName(8)
+bottomBar.Size = UDim2.new(1, 0, 0, 32)
+bottomBar.Position = UDim2.new(0, 0, 1, -32)
+bottomBar.BackgroundTransparency = 1
+bottomBar.ZIndex = 25
+bottomBar.Parent = glassWindow
+
+local bottomLine = Instance.new("Frame")
+bottomLine.Size = UDim2.new(1, -24, 0, 1)
+bottomLine.Position = UDim2.fromOffset(12, 0)
+bottomLine.BackgroundColor3 = T0.neon
+bottomLine.BackgroundTransparency = 0.76
+bottomLine.BorderSizePixel = 0
+bottomLine.ZIndex = 25
+bottomLine.Parent = bottomBar
+local bottomLineGrad = Instance.new("UIGradient")
+bottomLineGrad.Transparency = NumberSequence.new({
+	NumberSequenceKeypoint.new(0.00, 1.00),
+	NumberSequenceKeypoint.new(0.15, 0.25),
+	NumberSequenceKeypoint.new(0.85, 0.25),
+	NumberSequenceKeypoint.new(1.00, 1.00),
+})
+bottomLineGrad.Parent = bottomLine
+
+local btnMinus = Instance.new("TextButton")
+btnMinus.Size = UDim2.fromOffset(22, 20)
+btnMinus.Position = UDim2.fromOffset(16, 6)
+btnMinus.BackgroundColor3 = Color3.fromRGB(40, 34, 62)
+btnMinus.BackgroundTransparency = 0.24
+btnMinus.BorderSizePixel = 0
+btnMinus.AutoButtonColor = false
+btnMinus.Font = Enum.Font.GothamBold
+btnMinus.Text = "–"
+btnMinus.TextSize = 14
+btnMinus.ZIndex = 26
+btnMinus.Parent = bottomBar
+local mCorner = Instance.new("UICorner")
+mCorner.CornerRadius = UDim.new(0, 6)
+mCorner.Parent = btnMinus
+
+local btnPlus = Instance.new("TextButton")
+btnPlus.Size = UDim2.fromOffset(22, 20)
+btnPlus.Position = UDim2.fromOffset(42, 6)
+btnPlus.BackgroundColor3 = Color3.fromRGB(40, 34, 62)
+btnPlus.BackgroundTransparency = 0.24
+btnPlus.BorderSizePixel = 0
+btnPlus.AutoButtonColor = false
+btnPlus.Font = Enum.Font.GothamBold
+btnPlus.Text = "+"
+btnPlus.TextSize = 14
+btnPlus.ZIndex = 26
+btnPlus.Parent = bottomBar
+local pCorner = Instance.new("UICorner")
+pCorner.CornerRadius = UDim.new(0, 6)
+pCorner.Parent = btnPlus
+
+local sizeReadout = Instance.new("TextLabel")
+sizeReadout.Size = UDim2.fromOffset(130, 20)
+sizeReadout.Position = UDim2.fromOffset(72, 6)
+sizeReadout.BackgroundTransparency = 1
+applyMonoFont(sizeReadout, 12)
+sizeReadout.Text = string.format("%d × %d", Client.State.width, Client.State.height)
+sizeReadout.TextXAlignment = Enum.TextXAlignment.Left
+sizeReadout.ZIndex = 26
+sizeReadout.Parent = bottomBar
+
+local bottomPillBtn = Instance.new("TextButton")
+bottomPillBtn.Size = UDim2.fromOffset(120, 24)
+bottomPillBtn.Position = UDim2.new(0.5, -60, 0, 4)
+bottomPillBtn.BackgroundTransparency = 1
+bottomPillBtn.Text = ""
+bottomPillBtn.AutoButtonColor = false
+bottomPillBtn.ZIndex = 26
+bottomPillBtn.Parent = bottomBar
+
+local bottomPillVisual = Instance.new("Frame")
+bottomPillVisual.Size = UDim2.fromOffset(42, 2)
+bottomPillVisual.AnchorPoint = Vector2.new(0.5, 0.5)
+bottomPillVisual.Position = UDim2.fromScale(0.5, 0.5)
+bottomPillVisual.BackgroundColor3 = T0.bright
+bottomPillVisual.BackgroundTransparency = 0.20
+bottomPillVisual.BorderSizePixel = 0
+bottomPillVisual.ZIndex = 27
+bottomPillVisual.Parent = bottomPillBtn
+local pillCorner = Instance.new("UICorner")
+pillCorner.CornerRadius = UDim.new(0, 99)
+pillCorner.Parent = bottomPillVisual
+local pillNeon = Instance.new("UIStroke")
+pillNeon.Color = T0.neon
+pillNeon.Thickness = 1
+pillNeon.Transparency = 0.66
+pillNeon.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+pillNeon.Parent = bottomPillVisual
+
+local cornerGripBtn = Instance.new("TextButton")
+cornerGripBtn.Size = UDim2.fromOffset(30, 26)
+cornerGripBtn.Position = UDim2.new(1, -30, 0, 3)
+cornerGripBtn.BackgroundTransparency = 1
+cornerGripBtn.Text = ""
+cornerGripBtn.AutoButtonColor = false
+cornerGripBtn.ZIndex = 26
+cornerGripBtn.Parent = bottomBar
+
+local gripBars = {}
+for idx = 1, 3 do
+	local lineLen = idx * 4 + 2
+	local diag = Instance.new("Frame")
+	diag.Size = UDim2.fromOffset(lineLen, 1)
+	diag.AnchorPoint = Vector2.new(0.5, 0.5)
+	diag.Position = UDim2.fromOffset(22 - idx * 3, 22 - idx * 3)
+	diag.Rotation = -45
+	diag.BackgroundTransparency = 0.38
+	diag.BorderSizePixel = 0
+	diag.ZIndex = 27
+	diag.Parent = cornerGripBtn
+	table.insert(gripBars, diag)
+end
+
+table.insert(Client.ThemeListeners, function(th)
+	bottomLine.BackgroundColor3 = th.neon
+	btnMinus.BackgroundColor3 = th.tabActiveBg
+	btnMinus.TextColor3 = th.bright
+	btnPlus.BackgroundColor3 = th.tabActiveBg
+	btnPlus.TextColor3 = th.bright
+	sizeReadout.TextColor3 = th.muted
+	bottomPillVisual.BackgroundColor3 = th.bright
+	pillNeon.Color = th.neon
+	for _, g in ipairs(gripBars) do g.BackgroundColor3 = th.mid end
+end)
+
+-- ============================================================================
+-- 14. SMOOTH DRAG & RESIZE PHYSICS (ZERO CLICK JUMP)
+-- ============================================================================
+local MIN_W, MAX_W = 520, 1650
+local MIN_H, MAX_H = 340, 960
+
+local curX, curY = Client.State.posX, Client.State.posY
+local curW, curH = Client.State.width, Client.State.height
+local targetX, targetY = curX, curY
+local targetW, targetH = curW, curH
+
+function Client.SyncWindowFromState()
+	targetW = Client.State.width
+	targetH = Client.State.height
+	targetX = Client.State.posX
+	targetY = Client.State.posY
+	sizeReadout.Text = string.format("%d × %d", math.floor(targetW + 0.5), math.floor(targetH + 0.5))
+end
+
+local function clampWindowTarget()
+	local vp = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize or Vector2.new(1920, 1080)
+	local maxWAllowed = math.min(MAX_W, math.floor(vp.X - 40))
+	local maxHAllowed = math.min(MAX_H, math.floor(vp.Y - 40))
+	targetW = math.clamp(targetW, MIN_W, math.max(MIN_W, maxWAllowed))
+	targetH = math.clamp(targetH, MIN_H, math.max(MIN_H, maxHAllowed))
+	targetX = math.clamp(targetX, -targetW + 140, vp.X - 140)
+	targetY = math.clamp(targetY, 10, vp.Y - 80)
+	sizeReadout.Text = string.format("%d × %d", math.floor(targetW + 0.5), math.floor(targetH + 0.5))
+end
+
+local function commitWindowGeometry()
+	Client.State.width = math.floor(targetW + 0.5)
+	Client.State.height = math.floor(targetH + 0.5)
+	Client.State.posX = math.floor(targetX + 0.5)
+	Client.State.posY = math.floor(targetY + 0.5)
+	Client.SaveConfig(Client.ActiveConfigName)
+end
+
+local function stepWindowSize(dw, dh)
+	local oldW, oldH = targetW, targetH
+	targetW = math.clamp(oldW + dw, MIN_W, MAX_W)
+	targetH = math.clamp(oldH + dh, MIN_H, MAX_H)
+	targetX = targetX - (targetW - oldW) * 0.5
+	targetY = targetY - (targetH - oldH) * 0.5
+	clampWindowTarget()
+	commitWindowGeometry()
+end
+
+Client.Bind(btnMinus.MouseButton1Click, function() stepWindowSize(-75, -52) end)
+Client.Bind(btnPlus.MouseButton1Click, function() stepWindowSize(75, 52) end)
+
+local activeDragMode = nil
+local dragStartMouse = Vector2.zero
+local dragStartX, dragStartY, dragStartW, dragStartH = 0, 0, 0, 0
+local suppressDragUntil = 0
+
+local function registerNoDragControls(root)
+	local function attach(obj)
+		if obj:IsA("GuiButton") or obj:IsA("TextBox") then
+			if obj ~= bottomPillBtn and obj ~= cornerGripBtn then
+				Client.Bind(obj.InputBegan, function(inp)
+					if inp.UserInputType == Enum.UserInputType.MouseButton1 then
+						suppressDragUntil = os.clock() + 0.25
+					end
+				end)
+			end
+		end
+	end
+	for _, d in ipairs(root:GetDescendants()) do attach(d) end
+	Client.Bind(root.DescendantAdded, attach)
+end
+
+registerNoDragControls(glassWindow)
+registerNoDragControls(hatFrontHolder)
+
+local function beginInteraction(mode, input)
+	activeDragMode = mode
+	dragStartMouse = Vector2.new(input.Position.X, input.Position.Y)
+	dragStartX, dragStartY = targetX, targetY
+	dragStartW, dragStartH = targetW, targetH
+end
+
+Client.Bind(bottomPillBtn.InputBegan, function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1 then
+		bottomPillVisual.BackgroundColor3 = getTheme().neon
+		bottomPillVisual.Size = UDim2.fromOffset(58, 2)
+		beginInteraction("resizeH", input)
+	end
+end)
+Client.Bind(bottomPillBtn.MouseEnter, function()
+	if not activeDragMode then
+		Client.TrackTween(TweenService:Create(bottomPillVisual, TweenInfo.new(0.16), { Size = UDim2.fromOffset(56, 2) }))
+	end
+end)
+Client.Bind(bottomPillBtn.MouseLeave, function()
+	if not activeDragMode then
+		Client.TrackTween(TweenService:Create(bottomPillVisual, TweenInfo.new(0.16), { Size = UDim2.fromOffset(42, 2) }))
+	end
+end)
+
+Client.Bind(cornerGripBtn.InputBegan, function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1 then beginInteraction("resizeCorner", input) end
+end)
+
+Client.Bind(glassWindow.InputBegan, function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1 then
+		if os.clock() < suppressDragUntil then return end
+		local my = input.Position.Y
+		local winBottom = glassWindow.AbsolutePosition.Y + glassWindow.AbsoluteSize.Y
+		if my <= winBottom - 36 then beginInteraction("move", input) end
+	end
+end)
+
+Client.Bind(UserInputService.InputChanged, function(input)
+	if not activeDragMode then return end
+	if input.UserInputType ~= Enum.UserInputType.MouseMovement then return end
+	local delta = Vector2.new(input.Position.X - dragStartMouse.X, input.Position.Y - dragStartMouse.Y)
+	if activeDragMode == "move" then
+		targetX = dragStartX + delta.X
+		targetY = dragStartY + delta.Y
+		clampWindowTarget()
+	elseif activeDragMode == "resizeH" then
+		targetH = dragStartH + delta.Y
+		clampWindowTarget()
+	elseif activeDragMode == "resizeCorner" then
+		targetW = dragStartW + delta.X
+		targetH = dragStartH + delta.Y
+		clampWindowTarget()
+	end
+end)
+
+Client.Bind(UserInputService.InputEnded, function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1 and activeDragMode then
+		activeDragMode = nil
+		bottomPillVisual.BackgroundColor3 = getTheme().bright
+		Client.TrackTween(TweenService:Create(bottomPillVisual, TweenInfo.new(0.18), { Size = UDim2.fromOffset(42, 2) }))
+		commitWindowGeometry()
+	end
+end)
+
+Client.ApplyTheme(Client.State.theme)
+refreshConfigListUI()
+
+-- ============================================================================
+-- 15. BABFT GAME ENGINE (FARM, WATER BRIDGE, BOAT FLY, ESP, CREATIVE CLONER)
+-- ============================================================================
+do
+	local okDraw, drawCtor = pcall(function() return Drawing and Drawing.new end)
+	Engine.hasDrawing = okDraw and typeof(drawCtor) == "function"
+	Engine.savedWater = {}
+	Engine.waterDeckFolder = nil
+	Engine.waterDeckParts = {}
+	Engine.hologramFolder = nil
+	Engine.savedLight = {
+		Ambient = Lighting.Ambient,
+		OutdoorAmbient = Lighting.OutdoorAmbient,
+		Brightness = Lighting.Brightness,
+		ClockTime = Lighting.ClockTime,
+		GlobalShadows = Lighting.GlobalShadows,
+	}
+	Engine.flyBV = nil
+	Engine.flyBG = nil
+	Engine.boatBV = nil
+	Engine.boatBG = nil
+	Engine.farmBV = nil
+	Engine.farmBusy = false
+	Engine.buildBusy = false
+	Engine.targetName = nil
+	Engine.lastShopBuy = 0
+	Engine.lastEnvSync = 0
+	Engine.lastGoldCheck = 0
+	Engine.lastTargetScan = 0
+	Engine.espEntries = {}
+	Engine.chestLine = nil
+	Engine.chestText = nil
+
+	local dataFolder = localPlayer:FindFirstChild("Data")
+	local goldVal = dataFolder and dataFolder:FindFirstChild("Gold")
+	Engine.startGold = goldVal and goldVal.Value or 0
+	Engine.goldVal = goldVal
+
+	if Engine.hasDrawing then
+		local cl = Client.TrackDrawing(Drawing.new("Line"))
+		cl.Visible = false
+		cl.Thickness = 1.6
+		cl.Transparency = 0.85
+		Engine.chestLine = cl
+
+		local ct = Client.TrackDrawing(Drawing.new("Text"))
+		ct.Visible = false
+		ct.Size = 14
+		ct.Center = true
+		ct.Outline = true
+		ct.OutlineColor = Color3.new(0, 0, 0)
+		Engine.chestText = ct
+	end
+
+	function Engine.setStatus(msg)
+		if Engine.buildStatusLbl then
+			Engine.buildStatusLbl.Text = "Статус: " .. tostring(msg)
+		end
+	end
+
+	function Engine.getNormalStages()
+		local bs = workspace:FindFirstChild("BoatStages")
+		return bs and bs:FindFirstChild("NormalStages")
+	end
+
+	function Engine.getChestTrigger()
+		local ns = Engine.getNormalStages()
+		local fin = ns and ns:FindFirstChild("TheEnd")
+		local gc = fin and fin:FindFirstChild("GoldenChest")
+		return gc and gc:FindFirstChild("Trigger")
+	end
+
+	function Engine.claimGold()
+		local rem = workspace:FindFirstChild("ClaimRiverResultsGold")
+		if rem then pcall(function() rem:FireServer() end) end
+	end
+
+	function Engine.getPlayerZone(plr)
+		if not plr then return nil end
+		return workspace:FindFirstChild(tostring(plr.TeamColor) .. "Zone")
+	end
+
+	function Engine.isCFrameInZone(worldPos, zone)
+		if not zone then return false end
+		local localPos = zone.CFrame:PointToObjectSpace(worldPos)
+		local halfX = zone.Size.X * 0.5 - 0.5
+		local halfZ = zone.Size.Z * 0.5 - 0.5
+		return math.abs(localPos.X) <= halfX and math.abs(localPos.Z) <= halfZ
+	end
+
+	-- Walk on Water: NoTouch river + seamless theme-colored liquid-glass river deck
+	function Engine.applyWaterProtection(on)
+		local wsWater = workspace:FindFirstChild("Water")
+		if wsWater and wsWater:IsA("BasePart") then
+			if on then
+				if Engine.savedWater[wsWater] == nil then
+					Engine.savedWater[wsWater] = { touch = wsWater.CanTouch, col = wsWater.CanCollide }
+				end
+				wsWater.CanTouch = false
+				wsWater.CanCollide = true
+			elseif Engine.savedWater[wsWater] then
+				wsWater.CanTouch = Engine.savedWater[wsWater].touch
+				wsWater.CanCollide = Engine.savedWater[wsWater].col
+				Engine.savedWater[wsWater] = nil
+			end
+		end
+		local ns = Engine.getNormalStages()
+		if ns then
+			for _, d in ipairs(ns:GetDescendants()) do
+				if d:IsA("BasePart") and d.Name == "Water" then
+					if on then
+						if Engine.savedWater[d] == nil then
+							Engine.savedWater[d] = { touch = d.CanTouch, col = d.CanCollide }
+						end
+						d.CanTouch = false
+						d.CanCollide = true
+					elseif Engine.savedWater[d] then
+						d.CanTouch = Engine.savedWater[d].touch
+						d.CanCollide = Engine.savedWater[d].col
+						Engine.savedWater[d] = nil
+					end
+				end
+			end
+		end
+	end
+
+	function Engine.applyWalkOnWater(on)
+		Engine.applyWaterProtection(on or Client.State.autoFarmGold)
+		if on then
+			if not Engine.waterDeckFolder or not Engine.waterDeckFolder.Parent then
+				local folder = Instance.new("Folder")
+				folder.Name = randName(10)
+				folder.Parent = workspace
+				Engine.waterDeckFolder = folder
+				table.clear(Engine.waterDeckParts)
+				local th = Client.Themes[Client.State.theme] or Client.Themes.Lavender
+				local centers = { 500, 2500, 4500, 6500, 8500 }
+				for _, cz in ipairs(centers) do
+					local seg = Instance.new("Part")
+					seg.Name = randName(6)
+					seg.Anchored = true
+					seg.CanCollide = true
+					seg.CanTouch = false
+					seg.CanQuery = false
+					seg.Material = Enum.Material.Glass
+					seg.Color = th.neon
+					seg.Transparency = 0.62
+					seg.Size = Vector3.new(252, 0.7, 2000)
+					seg.Position = Vector3.new(-53.56, -12.95, cz)
+					seg.Parent = folder
+					table.insert(Engine.waterDeckParts, seg)
+				end
+			else
+				local th = Client.Themes[Client.State.theme] or Client.Themes.Lavender
+				for _, seg in ipairs(Engine.waterDeckParts) do
+					if seg and seg.Parent then seg.Color = th.neon end
+				end
+			end
+		else
+			if Engine.waterDeckFolder then
+				pcall(function() Engine.waterDeckFolder:Destroy() end)
+				Engine.waterDeckFolder = nil
+				table.clear(Engine.waterDeckParts)
+			end
+		end
+	end
+
+	function Engine.applyAntiDarkness(on)
+		local ps = localPlayer:FindFirstChild("PlayerScripts")
+		local df = ps and ps:FindFirstChild("DarknessFadeLS")
+		if df and df:IsA("LocalScript") then
+			df.Disabled = on
+		end
+		local ns = Engine.getNormalStages()
+		if ns then
+			for i = 1, 10 do
+				local st = ns:FindFirstChild("CaveStage" .. i)
+				local dp = st and st:FindFirstChild("DarknessPart")
+				if dp and dp:IsA("BasePart") then
+					dp.Transparency = on and 1 or 0
+				end
+			end
+		end
+	end
+
+	function Engine.applyFullbright(on)
+		if on then
+			Lighting.Ambient = Color3.fromRGB(215, 215, 215)
+			Lighting.OutdoorAmbient = Color3.fromRGB(205, 205, 205)
+			Lighting.Brightness = 2
+			Lighting.ClockTime = 14
+			Lighting.GlobalShadows = false
+		else
+			Lighting.Ambient = Engine.savedLight.Ambient
+			Lighting.OutdoorAmbient = Engine.savedLight.OutdoorAmbient
+			Lighting.Brightness = Engine.savedLight.Brightness
+			Lighting.ClockTime = Engine.savedLight.ClockTime
+			Lighting.GlobalShadows = Engine.savedLight.GlobalShadows
+		end
+	end
+
+	function Engine.stopFly()
+		if Engine.flyBV then pcall(function() Engine.flyBV:Destroy() end) Engine.flyBV = nil end
+		if Engine.flyBG then pcall(function() Engine.flyBG:Destroy() end) Engine.flyBG = nil end
+		local ch = localPlayer.Character
+		local hum = ch and ch:FindFirstChildOfClass("Humanoid")
+		if hum and not Client.State.autoFarmGold then pcall(function() hum.PlatformStand = false end) end
+	end
+
+	function Engine.stopBoatFly()
+		if Engine.boatBV then pcall(function() Engine.boatBV:Destroy() end) Engine.boatBV = nil end
+		if Engine.boatBG then pcall(function() Engine.boatBG:Destroy() end) Engine.boatBG = nil end
+	end
+
+	function Engine.stopFarmStabilizer()
+		if Engine.farmBV then pcall(function() Engine.farmBV:Destroy() end) Engine.farmBV = nil end
+		local ch = localPlayer.Character
+		local hum = ch and ch:FindFirstChildOfClass("Humanoid")
+		if hum and not Client.State.flyEnabled then pcall(function() hum.PlatformStand = false end) end
+	end
+
+	function Engine.restoreNoclip()
+		local ch = localPlayer.Character
+		if not ch then return end
+		for _, p in ipairs(ch:GetDescendants()) do
+			if p:IsA("BasePart") and p.Name ~= "HumanoidRootPart" then
+				pcall(function() p.CanCollide = true end)
+			end
+		end
+	end
+
+	function Engine.touchTrigger(root, trg)
+		if not root or not trg then return end
+		if typeof(firetouchinterest) == "function" then
+			pcall(function()
+				firetouchinterest(root, trg, 0)
+				task.wait(0.05)
+				firetouchinterest(root, trg, 1)
+			end)
+		end
+	end
+
+	function Engine.instantChestRun()
+		local ch = localPlayer.Character
+		local root = ch and ch:FindFirstChild("HumanoidRootPart")
+		local trg = Engine.getChestTrigger()
+		if not root or not trg then return end
+		root.AssemblyLinearVelocity = Vector3.zero
+		ch:PivotTo(trg.CFrame + Vector3.new(0, 2, 0))
+		Engine.touchTrigger(root, trg)
+		task.delay(1.0, Engine.claimGold)
+	end
+
+	-- ---- CREATIVE BOAT CLONER, HOLOGRAM & AUTO-BUILDER ----
+	function Engine.getBoatList()
+		local list = {}
+		local blocksFolder = workspace:FindFirstChild("Blocks")
+		if not blocksFolder then return list end
+		for _, f in ipairs(blocksFolder:GetChildren()) do
+			if f.Name ~= localPlayer.Name and f.Name ~= "ServerOwned!" then
+				local cnt = #f:GetChildren()
+				if cnt > 0 then
+					table.insert(list, { name = f.Name, count = cnt, folder = f })
+				end
+			end
+		end
+		table.sort(list, function(a, b) return a.count > b.count end)
+		return list
+	end
+
+	function Engine.refreshTargetLabel(forcePick)
+		local list = Engine.getBoatList()
+		if #list == 0 then
+			Engine.targetName = nil
+			if Engine.targetBoatLbl then Engine.targetBoatLbl.Text = "Цель: нет лодок" end
+			return nil
+		end
+		local found = nil
+		for _, item in ipairs(list) do
+			if item.name == Engine.targetName then found = item break end
+		end
+		if not found or forcePick then
+			found = list[1]
+			Engine.targetName = found.name
+		end
+		if Engine.targetBoatLbl then
+			Engine.targetBoatLbl.Text = string.format("Цель: %s (%d)", found.name, found.count)
+		end
+		return found
+	end
+
+	function Engine.cycleBoatTarget()
+		local list = Engine.getBoatList()
+		if #list == 0 then
+			Engine.targetName = nil
+			if Engine.targetBoatLbl then Engine.targetBoatLbl.Text = "Цель: нет лодок" end
+			return
+		end
+		local nextIdx = 1
+		for i, item in ipairs(list) do
+			if item.name == Engine.targetName then
+				nextIdx = (i % #list) + 1
+				break
+			end
+		end
+		local chosen = list[nextIdx]
+		Engine.targetName = chosen.name
+		if Engine.targetBoatLbl then
+			Engine.targetBoatLbl.Text = string.format("Цель: %s (%d)", chosen.name, chosen.count)
+		end
+		if Client.State.hologramPreview then
+			Engine.updateHologram(true)
+		end
+	end
+
+	function Engine.extractBoatLayout(targetName)
+		local blocksFolder = workspace:FindFirstChild("Blocks")
+		local tFolder = blocksFolder and targetName and blocksFolder:FindFirstChild(targetName)
+		local myZone = Engine.getPlayerZone(localPlayer)
+		if not tFolder or not myZone then return nil end
+
+		local raw = {}
+		local sumPos = Vector3.zero
+		local minY = math.huge
+		for _, m in ipairs(tFolder:GetChildren()) do
+			local pp = m:FindFirstChild("PPart") or (m:IsA("Model") and m.PrimaryPart)
+			if pp and pp:IsA("BasePart") then
+				table.insert(raw, {
+					name = m.Name,
+					cf = pp.CFrame,
+					size = pp.Size,
+					color = pp.Color,
+				})
+				sumPos = sumPos + pp.Position
+				local bottom = pp.Position.Y - pp.Size.Y * 0.5
+				if bottom < minY then minY = bottom end
+			end
+		end
+		if #raw == 0 then return nil end
+
+		local targetPlr = Players:FindFirstChild(targetName)
+		local oZone = Engine.getPlayerZone(targetPlr)
+		local centroid = sumPos / #raw
+		local useOtherZone = false
+		if oZone then
+			local relCentroid = oZone.CFrame:PointToObjectSpace(centroid)
+			if math.abs(relCentroid.X) < oZone.Size.X * 0.65 and math.abs(relCentroid.Z) < oZone.Size.Z * 0.65 then
+				useOtherZone = true
+			end
+		end
+
+		local mapped = {}
+		local anchorOrigin = CFrame.new(centroid.X, minY, centroid.Z)
+		local myBaseTop = myZone.CFrame * CFrame.new(0, myZone.Size.Y * 0.5 + 0.5, 0)
+		for _, item in ipairs(raw) do
+			local worldCF
+			if useOtherZone and oZone then
+				worldCF = myZone.CFrame * oZone.CFrame:ToObjectSpace(item.cf)
+			else
+				worldCF = myBaseTop * anchorOrigin:ToObjectSpace(item.cf)
+			end
+			table.insert(mapped, {
+				name = item.name,
+				worldCF = worldCF,
+				size = item.size,
+				color = item.color,
+			})
+		end
+		return mapped
+	end
+
+	function Engine.clearHologram()
+		if Engine.hologramFolder then
+			pcall(function() Engine.hologramFolder:Destroy() end)
+			Engine.hologramFolder = nil
+		end
+	end
+
+	function Engine.updateHologram(on)
+		Engine.clearHologram()
+		if not on then return end
+		local tgt = Engine.refreshTargetLabel(false)
+		if not tgt then
+			Engine.setStatus("нет лодок для голограммы")
+			return
+		end
+		local layout = Engine.extractBoatLayout(tgt.name)
+		if not layout then return end
+
+		local folder = Instance.new("Folder")
+		folder.Name = randName(10)
+		folder.Parent = workspace
+		Engine.hologramFolder = folder
+
+		local th = Client.Themes[Client.State.theme] or Client.Themes.Lavender
+		local cap = math.min(#layout, 260)
+		for i = 1, cap do
+			local b = layout[i]
+			local ghost = Instance.new("Part")
+			ghost.Name = randName(5)
+			ghost.Anchored = true
+			ghost.CanCollide = false
+			ghost.CanTouch = false
+			ghost.CanQuery = false
+			ghost.Material = Enum.Material.ForceField
+			ghost.Color = th.neon
+			ghost.Transparency = 0.45
+			ghost.Size = b.size
+			ghost.CFrame = b.worldCF
+			ghost.Parent = folder
+		end
+		Engine.setStatus(string.format("голограмма %s (%d)", tgt.name, cap))
+	end
+
+	function Engine.tpToTargetBoat()
+		local tgt = Engine.refreshTargetLabel(false)
+		if not tgt then Engine.setStatus("нет целей") return end
+		local first = tgt.folder:FindFirstChildWhichIsA("Model")
+		local pp = first and (first:FindFirstChild("PPart") or first.PrimaryPart)
+		local ch = localPlayer.Character
+		local root = ch and ch:FindFirstChild("HumanoidRootPart")
+		if pp and root then
+			Engine.applyWaterProtection(true)
+			root.AssemblyLinearVelocity = Vector3.zero
+			ch:PivotTo(pp.CFrame + Vector3.new(0, 10, 0))
+			Engine.setStatus("ТП к лодке " .. tgt.name)
+		end
+	end
+
+	function Engine.pickPlaceableBlock(desiredName, virtualUsed)
+		local data = localPlayer:FindFirstChild("Data")
+		local bpFolder = ReplicatedStorage:FindFirstChild("BuildingParts")
+		if not data or not bpFolder then return nil, 0 end
+
+		local function avail(name)
+			local val = data:FindFirstChild(name)
+			local baseCount = val and val.Value or 0
+			return baseCount - (virtualUsed[name] or 0), baseCount
+		end
+
+		if desiredName and bpFolder:FindFirstChild(desiredName) then
+			local rem, baseCount = avail(desiredName)
+			if rem > 0 then return desiredName, baseCount end
+		end
+
+		local bestName, bestRem, bestBase = nil, 0, 0
+		for _, ch in ipairs(data:GetChildren()) do
+			if ch:IsA("IntValue") or ch:IsA("NumberValue") then
+				local n = ch.Name
+				if string.find(n, "Block") and bpFolder:FindFirstChild(n) then
+					local rem, baseCount = avail(n)
+					if rem > bestRem then
+						bestRem = rem
+						bestBase = baseCount
+						bestName = n
+					end
+				end
+			end
+		end
+		return bestName, bestBase
+	end
+
+	function Engine.placeServerBlocks(items, labelPrefix)
+		if Engine.buildBusy then
+			Engine.setStatus("стройка уже идет...")
+			return
+		end
+		Engine.buildBusy = true
+		task.spawn(function()
+			local hum = localPlayer.Character and localPlayer.Character:FindFirstChildOfClass("Humanoid")
+			pcall(function()
+				local tool = localPlayer.Backpack:FindFirstChild("BuildingTool")
+					or (localPlayer.Character and localPlayer.Character:FindFirstChild("BuildingTool"))
+				local zone = Engine.getPlayerZone(localPlayer)
+				if not tool or not tool:FindFirstChild("RF") or not zone then
+					Engine.setStatus("нет BuildingTool/зоны")
+					return
+				end
+				if hum and tool.Parent == localPlayer.Backpack then
+					hum:EquipTool(tool)
+					task.wait(0.22)
+				end
+
+				local virtualUsed = {}
+				local placed = 0
+				local total = #items
+				local rf = tool.RF
+
+				for i, entry in ipairs(items) do
+					if not Client.Alive or not Engine.buildBusy then break end
+					if Engine.isCFrameInZone(entry.worldCF.Position, zone) then
+						local useName, ownedCount = Engine.pickPlaceableBlock(entry.name, virtualUsed)
+						if not useName then
+							Engine.setStatus(string.format("кончились блоки (%d/%d)", placed, total))
+							break
+						end
+						virtualUsed[useName] = (virtualUsed[useName] or 0) + 1
+						local relCF = zone.CFrame:ToObjectSpace(entry.worldCF)
+						task.spawn(function()
+							pcall(function()
+								rf:InvokeServer(useName, ownedCount, zone, relCF, true, entry.worldCF, false, true)
+							end)
+						end)
+						placed = placed + 1
+						if (i % 5 == 0) or i == total then
+							Engine.setStatus(string.format("%s: %d/%d", labelPrefix, placed, total))
+						end
+						task.wait(0.065)
+					end
+				end
+				task.wait(0.25)
+				if hum then pcall(function() hum:UnequipTools() end) end
+				Engine.setStatus(string.format("%s готово: %d", labelPrefix, placed))
+			end)
+			if hum then pcall(function() hum:UnequipTools() end) end
+			Engine.buildBusy = false
+		end)
+	end
+
+	function Engine.cloneTargetBoat()
+		local tgt = Engine.refreshTargetLabel(false)
+		if not tgt then Engine.setStatus("нет лодок на сервере") return end
+		local layout = Engine.extractBoatLayout(tgt.name)
+		if not layout or #layout == 0 then
+			Engine.setStatus("пустая постройка")
+			return
+		end
+		Engine.placeServerBlocks(layout, "Клон " .. tgt.name)
+	end
+
+	function Engine.buildPresetBlueprint()
+		local zone = Engine.getPlayerZone(localPlayer)
+		if not zone then Engine.setStatus("зона не найдена") return end
+		local baseCF = zone.CFrame * CFrame.new(0, zone.Size.Y * 0.5 + 1.0, 0)
+		local items = {}
+		local preset = Client.State.buildPreset
+
+		if preset == "Heart" then
+			local pts = {
+				{-2,3}, {-1,4}, {1,4}, {2,3},
+				{-3,2}, {0,3}, {3,2},
+				{-3,1}, {3,1}, {-2,0}, {2,0},
+				{-1,-1}, {1,-1}, {0,-2},
+			}
+			for _, p in ipairs(pts) do
+				table.insert(items, {
+					name = "NeonBlock",
+					worldCF = baseCF * CFrame.new(p[1] * 2, (p[2] + 2) * 2, 0),
+				})
+			end
+		elseif preset == "Tower" then
+			for y = 0, 7 do
+				local ring = (y % 2 == 0) and {{-1,0},{1,0},{0,-1},{0,1}} or {{0,0}}
+				for _, r in ipairs(ring) do
+					table.insert(items, {
+						name = "WoodBlock",
+						worldCF = baseCF * CFrame.new(r[1] * 2, y * 2, r[2] * 2),
+					})
+				end
+			end
+		else
+			-- FarmRaft: compact 3x3 raft + central column
+			for gx = -1, 1 do
+				for gz = -1, 1 do
+					table.insert(items, {
+						name = "WoodBlock",
+						worldCF = baseCF * CFrame.new(gx * 2, 0, gz * 2),
+					})
+				end
+			end
+		end
+
+		Engine.placeServerBlocks(items, preset)
+	end
+
+	function Engine.clearMyPlot()
+		if Engine.buildBusy then return end
+		Engine.buildBusy = true
+		task.spawn(function()
+			local hum = localPlayer.Character and localPlayer.Character:FindFirstChildOfClass("Humanoid")
+			pcall(function()
+				local del = localPlayer.Backpack:FindFirstChild("DeleteTool")
+					or (localPlayer.Character and localPlayer.Character:FindFirstChild("DeleteTool"))
+				local myBlocks = workspace:FindFirstChild("Blocks") and workspace.Blocks:FindFirstChild(localPlayer.Name)
+				if not del or not del:FindFirstChild("RF") or not myBlocks then
+					Engine.setStatus("нет DeleteTool")
+					return
+				end
+				local list = myBlocks:GetChildren()
+				if #list == 0 then
+					Engine.setStatus("база уже пустая")
+					return
+				end
+				if hum and del.Parent == localPlayer.Backpack then
+					hum:EquipTool(del)
+					task.wait(0.2)
+				end
+				local drf = del.RF
+				for i, blk in ipairs(list) do
+					if not Client.Alive then break end
+					task.spawn(function() pcall(function() drf:InvokeServer(blk) end) end)
+					if i % 6 == 0 then task.wait(0.05) end
+				end
+				task.wait(0.3)
+				if hum then pcall(function() hum:UnequipTools() end) end
+				Engine.setStatus("очищено блоков: " .. tostring(#list))
+			end)
+			Engine.buildBusy = false
+		end)
+	end
+
+	-- ---- ESP & CLEANUP ----
+	function Engine.clearEspForPlayer(plr)
+		local ent = Engine.espEntries[plr]
+		if ent then
+			ent.boxOutline.Visible = false
+			ent.boxMain.Visible = false
+			ent.nameTxt.Visible = false
+		end
+		local hl = Client.Janitor.highlights[plr]
+		if hl then hl.Enabled = false end
+	end
+
+	function Engine.removeEspForPlayer(plr)
+		local ent = Engine.espEntries[plr]
+		if ent then
+			for _, d in pairs(ent) do pcall(function() d.Visible = false; d:Remove() end) end
+			Engine.espEntries[plr] = nil
+		end
+		local hl = Client.Janitor.highlights[plr]
+		if hl then pcall(function() hl:Destroy() end) Client.Janitor.highlights[plr] = nil end
+	end
+
+	function Engine.getOrCreateEsp(plr)
+		if Engine.espEntries[plr] then return Engine.espEntries[plr] end
+		if not Engine.hasDrawing then return nil end
+		local ent = {
+			boxOutline = Client.TrackDrawing(Drawing.new("Square")),
+			boxMain = Client.TrackDrawing(Drawing.new("Square")),
+			nameTxt = Client.TrackDrawing(Drawing.new("Text")),
+		}
+		ent.boxOutline.Filled = false
+		ent.boxOutline.Thickness = 2.5
+		ent.boxOutline.Color = Color3.new(0, 0, 0)
+		ent.boxOutline.Transparency = 0.72
+		ent.boxMain.Filled = false
+		ent.boxMain.Thickness = 1.2
+		ent.boxMain.Transparency = 0.95
+		ent.nameTxt.Size = 12
+		ent.nameTxt.Center = true
+		ent.nameTxt.Outline = true
+		ent.nameTxt.OutlineColor = Color3.new(0, 0, 0)
+		Engine.espEntries[plr] = ent
+		Engine.clearEspForPlayer(plr)
+		return ent
+	end
+
+	restoreAllBabft = function()
+		Engine.buildBusy = false
+		Engine.stopFly()
+		Engine.stopBoatFly()
+		Engine.stopFarmStabilizer()
+		Engine.restoreNoclip()
+		Engine.applyWalkOnWater(false)
+		Engine.applyWaterProtection(false)
+		Engine.clearHologram()
+		Engine.applyAntiDarkness(false)
+		Engine.applyFullbright(false)
+	end
+
+	table.insert(Client.StateListeners, function()
+		if not Client.Alive then return end
+		Engine.applyWalkOnWater(Client.State.walkOnWater)
+		Engine.applyAntiDarkness(Client.State.antiDarkness)
+		Engine.applyFullbright(Client.State.fullbright)
+		if Client.State.hologramPreview and not Engine.hologramFolder then
+			Engine.updateHologram(true)
+		elseif not Client.State.hologramPreview and Engine.hologramFolder then
+			Engine.clearHologram()
+		end
+	end)
+
+	Client.Bind(Players.PlayerRemoving, function(plr)
+		Engine.removeEspForPlayer(plr)
+	end)
+
+	Client.Bind(localPlayer.Idled, function()
+		if Client.Alive and (Client.State.antiAfk or Client.State.autoFarmGold) then
+			pcall(function()
+				VirtualUser:CaptureController()
+				VirtualUser:ClickButton2(Vector2.zero)
+			end)
+		end
+	end)
+
+	Client.Bind(UserInputService.JumpRequest, function()
+		if not Client.Alive or not Client.State.infJump then return end
+		local ch = localPlayer.Character
+		local hum = ch and ch:FindFirstChildOfClass("Humanoid")
+		if hum and hum.Health > 0 then
+			hum:ChangeState(Enum.HumanoidStateType.Jumping)
+		end
+	end)
+
+	Client.Bind(UserInputService.InputBegan, function(input, gp)
+		if gp or not Client.Alive then return end
+		if input.KeyCode == Enum.KeyCode.F then
+			Client.State.flyEnabled = not Client.State.flyEnabled
+			if not Client.State.flyEnabled then Engine.stopFly() end
+			for _, fn in ipairs(Client.StateListeners) do pcall(fn) end
+		elseif input.KeyCode == Enum.KeyCode.V then
+			Client.State.boatFly = not Client.State.boatFly
+			if not Client.State.boatFly then Engine.stopBoatFly() end
+			for _, fn in ipairs(Client.StateListeners) do pcall(fn) end
+		elseif input.UserInputType == Enum.UserInputType.MouseButton1 and Client.State.clickTp then
+			if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) or UserInputService:IsKeyDown(Enum.KeyCode.RightControl) then
+				local ch = localPlayer.Character
+				local root = ch and ch:FindFirstChild("HumanoidRootPart")
+				local cam = workspace.CurrentCamera
+				if ch and root and cam then
+					local mLoc = UserInputService:GetMouseLocation()
+					local ray = cam:ViewportPointToRay(mLoc.X, mLoc.Y)
+					local rp = RaycastParams.new()
+					rp.FilterType = Enum.RaycastFilterType.Exclude
+					rp.FilterDescendantsInstances = Engine.hologramFolder and { ch, Engine.hologramFolder } or { ch }
+					local res = workspace:Raycast(ray.Origin, ray.Direction * 1500, rp)
+					local hitPos = res and res.Position or nil
+					if hitPos then
+						root.AssemblyLinearVelocity = Vector3.zero
+						ch:PivotTo(CFrame.new(hitPos + Vector3.new(0, 3.6, 0)) * (root.CFrame - root.Position))
+						local ring = Instance.new("Part")
+						ring.Shape = Enum.PartType.Cylinder
+						ring.Anchored = true
+						ring.CanCollide = false
+						ring.CanTouch = false
+						ring.CanQuery = false
+						ring.Material = Enum.Material.Neon
+						ring.Color = (Client.Themes[Client.State.theme] or Client.Themes.Lavender).neon
+						ring.Size = Vector3.new(0.25, 2, 2)
+						ring.CFrame = CFrame.new(hitPos + Vector3.new(0, 0.2, 0)) * CFrame.Angles(0, 0, math.rad(90))
+						ring.Transparency = 0.2
+						ring.Parent = workspace
+						local tw = TweenService:Create(ring, TweenInfo.new(0.32, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+							Size = Vector3.new(0.1, 10, 10),
+							Transparency = 1,
+						})
+						tw.Completed:Once(function() pcall(function() ring:Destroy() end) end)
+						tw:Play()
+					end
+				end
+			end
+		end
+	end)
+
+	Client.Bind(RunService.Stepped, function()
+		if not Client.Alive or not Client.State.autoFarmGold then return end
+		local ch = localPlayer.Character
+		if ch then
+			for _, p in ipairs(ch:GetDescendants()) do
+				if p:IsA("BasePart") then p.CanCollide = false end
+			end
+		end
+	end)
+
+	Client.Bind(RunService.Heartbeat, function()
+		if not Client.Alive then return end
+		local ch = localPlayer.Character
+		local root = ch and ch:FindFirstChild("HumanoidRootPart")
+		local hum = ch and ch:FindFirstChildOfClass("Humanoid")
+		if not root or not hum or hum.Health <= 0 then return end
+
+		local cam = workspace.CurrentCamera
+		local function getMoveVec()
+			if not cam then return Vector3.zero end
+			local move = Vector3.zero
+			if UserInputService:IsKeyDown(Enum.KeyCode.W) then move = move + cam.CFrame.LookVector end
+			if UserInputService:IsKeyDown(Enum.KeyCode.S) then move = move - cam.CFrame.LookVector end
+			if UserInputService:IsKeyDown(Enum.KeyCode.D) then move = move + cam.CFrame.RightVector end
+			if UserInputService:IsKeyDown(Enum.KeyCode.A) then move = move - cam.CFrame.RightVector end
+			if UserInputService:IsKeyDown(Enum.KeyCode.Space) then move = move + Vector3.new(0, 1, 0) end
+			if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then move = move - Vector3.new(0, 1, 0) end
+			return move.Magnitude > 0.01 and move.Unit or Vector3.zero
+		end
+
+		-- Boat Fly (when seated on a boat seat!)
+		local seat = hum.SeatPart
+		if Client.State.boatFly and seat and seat:IsA("BasePart") and not Client.State.autoFarmGold then
+			Engine.stopFly()
+			if not Engine.boatBV or Engine.boatBV.Parent ~= seat then
+				Engine.stopBoatFly()
+				local bv = Instance.new("BodyVelocity")
+				bv.MaxForce = Vector3.new(9e7, 9e7, 9e7)
+				bv.Velocity = Vector3.zero
+				bv.Parent = seat
+				Engine.boatBV = bv
+				local bg = Instance.new("BodyGyro")
+				bg.MaxTorque = Vector3.new(9e7, 9e7, 9e7)
+				bg.P = 5e4
+				bg.CFrame = seat.CFrame
+				bg.Parent = seat
+				Engine.boatBG = bg
+			end
+			local dir = getMoveVec()
+			Engine.boatBV.Velocity = dir * Client.State.boatFlySpeed
+			if cam then
+				local look = Vector3.new(cam.CFrame.LookVector.X, cam.CFrame.LookVector.Y, cam.CFrame.LookVector.Z)
+				Engine.boatBG.CFrame = CFrame.lookAt(seat.Position, seat.Position + look)
+			end
+			return
+		elseif Engine.boatBV then
+			Engine.stopBoatFly()
+		end
+
+		-- Regular Character Fly (F)
+		if Client.State.flyEnabled and not Client.State.autoFarmGold then
+			if not Engine.flyBV or Engine.flyBV.Parent ~= root then
+				Engine.stopFly()
+				local bv = Instance.new("BodyVelocity")
+				bv.MaxForce = Vector3.new(9e4, 9e4, 9e4)
+				bv.Velocity = Vector3.zero
+				bv.Parent = root
+				Engine.flyBV = bv
+				local bg = Instance.new("BodyGyro")
+				bg.MaxTorque = Vector3.new(9e4, 9e4, 9e4)
+				bg.P = 9e4
+				bg.CFrame = root.CFrame
+				bg.Parent = root
+				Engine.flyBG = bg
+			end
+			hum.PlatformStand = true
+			if cam then
+				Engine.flyBV.Velocity = getMoveVec() * Client.State.flySpeed
+				Engine.flyBG.CFrame = cam.CFrame
+			end
+		end
+	end)
+end
+
+-- ============================================================================
+-- 16. INTRO -> LIQUID GLASS TRANSITION
+-- ============================================================================
+local transitionedToGlass = false
+local starsActive = true
+
+local function transitionToLiquidGlass()
+	if transitionedToGlass then return end
+	transitionedToGlass = true
+	starsActive = false
+
+	Client.TrackTween(TweenService:Create(blurEffect, TweenInfo.new(0.45, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), { Size = 0 }))
+	task.delay(0.46, function()
+		if Client.Alive and blurEffect then blurEffect.Enabled = false end
+	end)
+
+	local fadeSky = TweenInfo.new(0.40, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+	for _, m in ipairs(meteors) do Client.TrackTween(TweenService:Create(m.img, fadeSky, { ImageTransparency = 1 })) end
+	for _, s in ipairs(stars) do Client.TrackTween(TweenService:Create(s.img, fadeSky, { ImageTransparency = 1 })) end
+	task.delay(0.42, function()
+		if Client.Alive and skyLayer then skyLayer.Visible = false end
+	end)
+
+	Client.TrackTween(TweenService:Create(introPanel, TweenInfo.new(0.45, Enum.EasingStyle.Quad, Enum.EasingDirection.InOut), {
+		Position = UDim2.new(0.5, 0, 0.48, 0),
+		BackgroundTransparency = 1
+	}))
+	Client.TrackTween(TweenService:Create(introStroke, TweenInfo.new(0.35), { Transparency = 1 }))
+	for _, child in ipairs(introPanel:GetDescendants()) do
+		if child:IsA("TextLabel") then Client.TrackTween(TweenService:Create(child, TweenInfo.new(0.32), { TextTransparency = 1 }))
+		elseif child:IsA("ImageLabel") then Client.TrackTween(TweenService:Create(child, TweenInfo.new(0.32), { ImageTransparency = 1 }))
+		elseif child:IsA("Frame") then Client.TrackTween(TweenService:Create(child, TweenInfo.new(0.32), { BackgroundTransparency = 1 })) end
+	end
+
+	Client.TrackTween(TweenService:Create(backdrop, TweenInfo.new(0.65, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+		BackgroundTransparency = 0.05
+	}))
+
+	task.delay(0.32, function()
+		if not Client.Alive then return end
+		introPanel.Visible = false
+
+		clampWindowTarget()
+		curX, curY, curW, curH = targetX, targetY, targetW, targetH
+		glassWindow.Position = UDim2.fromOffset(math.floor(curX + 0.5), math.floor(curY + 0.5))
+		glassWindow.Size = UDim2.fromOffset(math.floor(curW * 0.96), math.floor(curH * 0.96))
+		glassWindow.BackgroundTransparency = 1
+		glassWindow.Visible = true
+
+		if #hatFrontAssets > 0 then
+			local initHatPos = UDim2.fromOffset(math.floor(curX + curW + 0.5), math.floor(curY + 0.5))
+			hatBackHolder.Position = initHatPos
+			hatFrontHolder.Position = initHatPos
+			hatBackHolder.Visible = true
+			hatFrontHolder.Visible = true
+			hatNextIdleAt = os.clock() + 4.0
+		end
+
+		local glassIn = TweenInfo.new(0.55, Enum.EasingStyle.Quart, Enum.EasingDirection.Out)
+		Client.TrackTween(TweenService:Create(glassWindow, glassIn, {
+			Size = UDim2.fromOffset(math.floor(curW + 0.5), math.floor(curH + 0.5)),
+			BackgroundTransparency = 0.44
+		}))
+		Client.TrackTween(TweenService:Create(glassOuterStroke, glassIn, { Transparency = 0.22 }))
+		Client.TrackTween(TweenService:Create(neonRimStroke, glassIn, { Transparency = Client.State.neonBorderGlow and 0.79 or 1 }))
+		Client.TrackTween(TweenService:Create(innerChamberStroke, glassIn, { Transparency = 0.62 }))
+		Client.TrackTween(TweenService:Create(topMeniscus, glassIn, { BackgroundTransparency = 0.08 }))
+		Client.TrackTween(TweenService:Create(botMeniscus, glassIn, { BackgroundTransparency = Client.State.neonBorderGlow and 0.16 or 1 }))
+		if liquidSheen then Client.TrackTween(TweenService:Create(liquidSheen, glassIn, { ImageTransparency = 0.24 })) end
+		if glassFrostGrain then Client.TrackTween(TweenService:Create(glassFrostGrain, glassIn, { ImageTransparency = 0.56 })) end
+	end)
+end
+
+-- ============================================================================
+-- 16. MAIN RENDER LOOP (UI + INTRO + GLASS + CORNER HAT)
+-- ============================================================================
+local TOTAL_FRAMES = #sheetLabels * 9
+local FRAME_RATE = 16
+local activeSheetIdx = 1
+local activeHatSheetIdx = 1
+local startTime = os.clock()
+local animStart = os.clock()
+local LOAD_DURATION = 5.2
+
+local statusPhases = {
+	{ p = 0.00, text = "Загружаем оформление..." },
+	{ p = 0.30, text = "Подготавливаем интерфейс..." },
+	{ p = 0.68, text = "Почти готово..." },
+	{ p = 0.96, text = "Готово!" },
+}
+
+local fpsSamples, fpsAccum, lastPerfReport = 0, 0, os.clock()
+
+Client.Bind(RunService.RenderStepped, function(dt)
+	if not Client.Alive then return end
+	local now = os.clock()
+	local cam = workspace.CurrentCamera
+	local vp = cam and cam.ViewportSize or Vector2.new(1920, 1080)
+	local th = getTheme()
+
+	-- Telemetry (every 0.5s)
+	fpsSamples = fpsSamples + 1
+	fpsAccum = fpsAccum + dt
+	if (now - lastPerfReport) >= 0.5 and fpsStatusLabel then
+		local avgFps = fpsAccum > 0 and math.floor((fpsSamples / fpsAccum) + 0.5) or 0
+		local memMb = collectgarbage("count") / 1024
+		fpsStatusLabel.Text = string.format("FPS: %d | %.1f MB", avgFps, memMb)
+		fpsSamples = 0
+		fpsAccum = 0
+		lastPerfReport = now
+	end
+
+	-- 1) Intro Falling Stars & Meteors
+	if starsActive then
+		for _, m in ipairs(meteors) do
+			m.x = m.x + m.vx * dt
+			m.y = m.y + m.vy * dt
+			m.img.Position = UDim2.fromOffset(math.floor(m.x), math.floor(m.y))
+			m.img.ImageTransparency = math.clamp(m.baseTrans + 0.08 * math.sin(now * 4 + m.phase), 0, 0.8)
+			if m.y > vp.Y + 220 or m.x < -260 then
+				m.y = math.random(-280, -40)
+				m.x = math.random(math.floor(vp.X * 0.15), math.floor(vp.X + 260))
+			end
+		end
+		for _, s in ipairs(stars) do
+			s.x = s.x + s.vx * dt + math.sin(now * 1.3 + s.phase) * 10 * dt
+			s.y = s.y + s.vy * dt
+			local twinkle = 0.5 + 0.5 * math.sin(now * 3.2 + s.phase)
+			s.img.ImageTransparency = 0.08 + 0.52 * twinkle
+			local curSz = math.floor(s.baseSize * (0.82 + 0.25 * (1 - twinkle)))
+			s.img.Size = UDim2.fromOffset(curSz, curSz)
+			s.img.Rotation = s.img.Rotation + 14 * dt
+			if s.y > vp.Y + 40 then
+				s.y = -30
+				s.x = math.random(20, math.floor(vp.X - 20))
+			end
+			s.img.Position = UDim2.fromOffset(math.floor(s.x), math.floor(s.y))
+		end
+	end
+
+	-- 2) Liquid Glass UI & Corner Hat
+	if transitionedToGlass then
+		strokeGrad.Rotation = 38 + math.sin(now * 0.8) * 14
+		neonRimGrad.Rotation = (now * 24) % 360
+
+		kronosTitleGrad.Offset = Vector2.new(math.sin(now * 1.15) * 0.32, 0)
+		local sweep = ((now * 0.68) % 2.2) - 1.1
+		subFillGrad.Offset = Vector2.new(sweep, 0)
+		subStrokeGrad.Rotation = (now * 48) % 360
+		subTextGrad.Offset = Vector2.new(math.sin(now * 1.8) * 0.35, 0)
+		if miscSubFillGrad then miscSubFillGrad.Offset = Vector2.new(sweep, 0) end
+		if miscSubStrokeGrad then miscSubStrokeGrad.Rotation = (now * 48) % 360 end
+		if miscSubTextGrad then miscSubTextGrad.Offset = Vector2.new(math.sin(now * 1.8) * 0.35, 0) end
+		if miscSubAura then miscSubAura.ImageTransparency = 0.36 + 0.16 * (0.5 + 0.5 * math.sin(now * 2.8)) end
+		if miscSubStar then miscSubStar.Rotation = miscSubStar.Rotation + 36 * dt end
+		if subAura then subAura.ImageTransparency = 0.36 + 0.16 * (0.5 + 0.5 * math.sin(now * 2.8)) end
+		if sideHeaderGlow then sideHeaderGlow.ImageTransparency = 0.58 + 0.12 * (0.5 + 0.5 * math.cos(now * 1.8)) end
+		if subStar then subStar.Rotation = subStar.Rotation + 36 * dt end
+
+		if #hatFrontLabels > 0 and HAT_TOTAL_FRAMES > 0 then
+			if not hatAnimStartedAt and hatNextIdleAt and now >= hatNextIdleAt then
+				hatAnimStartedAt = now
+				hatNextIdleAt = now + 14.0
+			end
+			local hatFrameIdx0 = 0
+			local breezeFps = 14
+			local breezeDur = HAT_TOTAL_FRAMES / breezeFps
+			if hatAnimStartedAt then
+				local el = now - hatAnimStartedAt
+				if el < breezeDur then hatFrameIdx0 = math.min(HAT_TOTAL_FRAMES - 1, math.floor(el * breezeFps))
+				else hatAnimStartedAt = nil; hatFrameIdx0 = 0 end
+			end
+			local hSheetIdx = math.floor(hatFrameIdx0 / HAT_PER_SHEET) + 1
+			local hLocalIdx = hatFrameIdx0 % HAT_PER_SHEET
+			local hCol = hLocalIdx % HAT_COLS
+			local hRow = math.floor(hLocalIdx / HAT_COLS)
+			local rectOff = Vector2.new(hCol * HAT_CELL_W, hRow * HAT_CELL_H)
+
+			local targetF = hatFrontLabels[hSheetIdx]
+			if targetF then
+				targetF.ImageRectOffset = rectOff
+				if hSheetIdx ~= activeHatSheetIdx then
+					if hatFrontLabels[activeHatSheetIdx] then
+						hatFrontLabels[activeHatSheetIdx].ImageTransparency = 1
+						hatFrontLabels[activeHatSheetIdx].ZIndex = 36
+					end
+					targetF.ImageTransparency = 0
+					targetF.ZIndex = 37
+				end
+			end
+			local targetB = hatBackLabels[hSheetIdx]
+			if targetB then
+				targetB.ImageRectOffset = rectOff
+				if hSheetIdx ~= activeHatSheetIdx then
+					if hatBackLabels[activeHatSheetIdx] then
+						hatBackLabels[activeHatSheetIdx].ImageTransparency = 1
+						hatBackLabels[activeHatSheetIdx].ZIndex = 13
+					end
+					targetB.ImageTransparency = 0
+					targetB.ZIndex = 14
+				end
+			end
+			activeHatSheetIdx = hSheetIdx
+			local swayRot = HAT_BASE_ROT + math.sin(now * 1.4) * 0.45
+			hatFrontHolder.Rotation = swayRot
+			hatBackHolder.Rotation = swayRot
+		end
+
+		local lerpAlpha = 1 - math.exp(-dt * 22)
+		curX = curX + (targetX - curX) * lerpAlpha
+		curY = curY + (targetY - curY) * lerpAlpha
+		curW = curW + (targetW - curW) * lerpAlpha
+		curH = curH + (targetH - curH) * lerpAlpha
+
+		local rx, ry = math.floor(curX + 0.5), math.floor(curY + 0.5)
+		local rw, rh = math.floor(curW + 0.5), math.floor(curH + 0.5)
+		glassWindow.Position = UDim2.fromOffset(rx, ry)
+		glassWindow.Size = UDim2.fromOffset(rw, rh)
+		local hatPos = UDim2.fromOffset(rx + rw, ry)
+		hatFrontHolder.Position = hatPos
+		hatBackHolder.Position = hatPos
+	end
+
+	-- 3) Intro Sprite Sheet & Progress
+	if not transitionedToGlass then
+		if TOTAL_FRAMES > 0 then
+			local frameIdx0 = math.floor((now - animStart) * FRAME_RATE) % TOTAL_FRAMES
+			local sheetIdx = math.floor(frameIdx0 / 9) + 1
+			local localIdx = frameIdx0 % 9
+			local col = localIdx % 3
+			local row = math.floor(localIdx / 3)
+			local targetImg = sheetLabels[sheetIdx]
+			if targetImg then
+				targetImg.ImageRectOffset = Vector2.new(col * CELL_W, row * CELL_H)
+				if sheetIdx ~= activeSheetIdx then
+					if sheetLabels[activeSheetIdx] then
+						sheetLabels[activeSheetIdx].ImageTransparency = 1
+						sheetLabels[activeSheetIdx].ZIndex = 7
+					end
+					targetImg.ImageTransparency = 0
+					targetImg.ZIndex = 8
+					activeSheetIdx = sheetIdx
+				end
+			end
+		end
+		if tipStar then tipStar.Rotation = tipStar.Rotation + 65 * dt end
+		local elapsed = now - startTime
+		local progress = math.clamp(elapsed / LOAD_DURATION, 0, 1)
+		fill.Size = UDim2.new(progress, 0, 1, 0)
+		percentLabel.Text = string.format("%d%%", math.floor(progress * 100 + 0.5))
+		local curText = statusPhases[1].text
+		for _, st in ipairs(statusPhases) do
+			if progress >= st.p then curText = st.text end
+		end
+		statusLabel.Text = curText
+		if elapsed >= (LOAD_DURATION + 0.3) then transitionToLiquidGlass() end
+	end
+
+	-- 4) Golden Chest Beam
+	local chestTrg = Engine.getChestTrigger()
+	local myChar = localPlayer.Character
+	local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
+
+	if Engine.chestLine and Engine.chestText then
+		if Client.State.chestBeam and chestTrg and cam then
+			local p2d, onScr = cam:WorldToViewportPoint(chestTrg.Position)
+			if p2d.Z > 0 and onScr then
+				local dist = myRoot and math.floor((chestTrg.Position - myRoot.Position).Magnitude + 0.5) or 0
+				Engine.chestLine.From = Vector2.new(vp.X * 0.5, vp.Y - 12)
+				Engine.chestLine.To = Vector2.new(p2d.X, p2d.Y)
+				Engine.chestLine.Color = th.neon
+				Engine.chestLine.Visible = true
+				Engine.chestText.Position = Vector2.new(p2d.X, p2d.Y - 18)
+				Engine.chestText.Text = string.format("TREASURE · %dm", dist)
+				Engine.chestText.Color = th.bright
+				Engine.chestText.Visible = true
+			else
+				Engine.chestLine.Visible = false
+				Engine.chestText.Visible = false
+			end
+		else
+			Engine.chestLine.Visible = false
+			Engine.chestText.Visible = false
+		end
+	end
+
+	-- 5) Player ESP & Chams (Theme-Synced)
+	for _, plr in ipairs(Players:GetPlayers()) do
+		if plr ~= localPlayer then
+			local ch = plr.Character
+			local hum = ch and ch:FindFirstChildOfClass("Humanoid")
+			local root = ch and ch:FindFirstChild("HumanoidRootPart")
+			local head = ch and ch:FindFirstChild("Head")
+			if not ch or not ch:IsDescendantOf(workspace) or not hum or hum.Health <= 0 or not root or not head then
+				Engine.clearEspForPlayer(plr)
+			else
+				if Client.State.espChams then
+					local hl = Client.Janitor.highlights[plr]
+					if not hl or not hl.Parent then
+						hl = Instance.new("Highlight")
+						hl.Name = randName(8)
+						hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+						hl.FillTransparency = 0.68
+						hl.OutlineTransparency = 0.1
+						hl.Parent = gethui()
+						Client.Janitor.highlights[plr] = hl
+					end
+					hl.Adornee = ch
+					hl.FillColor = th.accent
+					hl.OutlineColor = th.bright
+					hl.Enabled = true
+				elseif Client.Janitor.highlights[plr] then
+					Client.Janitor.highlights[plr].Enabled = false
+				end
+
+				if Client.State.espPlayers and Engine.hasDrawing and cam then
+					local ent = Engine.getOrCreateEsp(plr)
+					local top2D, on1 = cam:WorldToViewportPoint(head.Position + Vector3.new(0, 1, 0))
+					local bot2D, on2 = cam:WorldToViewportPoint(root.Position - Vector3.new(0, 3, 0))
+					local root2D, onR = cam:WorldToViewportPoint(root.Position)
+					if (on1 or on2 or onR) and root2D.Z > 0 then
+						local boxH = math.max(14, math.abs(bot2D.Y - top2D.Y))
+						local boxW = boxH * 0.58
+						local bx, by = root2D.X - boxW * 0.5, top2D.Y
+						ent.boxOutline.Position = Vector2.new(bx, by)
+						ent.boxOutline.Size = Vector2.new(boxW, boxH)
+						ent.boxOutline.Visible = true
+						ent.boxMain.Position = Vector2.new(bx, by)
+						ent.boxMain.Size = Vector2.new(boxW, boxH)
+						ent.boxMain.Color = th.neon
+						ent.boxMain.Visible = true
+						local dist = myRoot and math.floor((root.Position - myRoot.Position).Magnitude + 0.5) or 0
+						local tName = plr.Team and plr.Team.Name or "none"
+						ent.nameTxt.Position = Vector2.new(root2D.X, by - 16)
+						ent.nameTxt.Text = string.format("%s [%s · %dm]", plr.DisplayName, tName, dist)
+						ent.nameTxt.Color = th.bright
+						ent.nameTxt.Visible = true
+					else
+						Engine.clearEspForPlayer(plr)
+					end
+				elseif Engine.espEntries[plr] then
+					Engine.clearEspForPlayer(plr)
+				end
+			end
+		end
+	end
+
+	-- 6) Anti-Ragdoll guard
+	if myChar and myRoot and Client.State.antiRagdoll then
+		local myHum = myChar:FindFirstChildOfClass("Humanoid")
+		if myHum and myHum.Health > 0 then
+			if myHum:GetState() == Enum.HumanoidStateType.Physics or myHum:GetState() == Enum.HumanoidStateType.Ragdoll then
+				myHum:ChangeState(Enum.HumanoidStateType.GettingUp)
+			end
+			if myHum.PlatformStand and not Client.State.flyEnabled and not Client.State.autoFarmGold and not myHum.SeatPart then
+				myHum.PlatformStand = false
+			end
+		end
+	end
+
+	-- 7) AFK Auto-Farm Gold (Smooth Y=18 Glide Across All 10 Stages + Golden Chest + Claim)
+	if Client.State.autoFarmGold and not Engine.farmBusy and myChar and myRoot then
+		Engine.farmBusy = true
+		task.spawn(function()
+			local farmTw = nil
+			pcall(function()
+				local ch = localPlayer.Character
+				local r = ch and ch:FindFirstChild("HumanoidRootPart")
+				local h = ch and ch:FindFirstChildOfClass("Humanoid")
+				local ns = Engine.getNormalStages()
+				if r and h and h.Health > 0 and ns then
+					Engine.applyWaterProtection(true)
+					local bv = Instance.new("BodyVelocity")
+					bv.MaxForce = Vector3.new(9e5, 9e5, 9e5)
+					bv.Velocity = Vector3.zero
+					bv.Parent = r
+					Engine.farmBV = bv
+					h.PlatformStand = true
+
+					r.AssemblyLinearVelocity = Vector3.zero
+					r.CFrame = CFrame.new(-51.5, 18, 950)
+
+					local totalDur = math.max(10, (Client.State.farmStageDelay or 12) * 1.65)
+					farmTw = TweenService:Create(r, TweenInfo.new(totalDur, Enum.EasingStyle.Linear), {
+						CFrame = CFrame.new(-51.5, 18, 8600)
+					})
+					farmTw:Play()
+
+					local twDone = false
+					local twConn = farmTw.Completed:Once(function() twDone = true end)
+					while not twDone and Client.Alive and Client.State.autoFarmGold and r.Parent and h.Health > 0 do
+						r.AssemblyLinearVelocity = Vector3.zero
+						task.wait(0.15)
+					end
+					if twConn then pcall(function() twConn:Disconnect() end) end
+					if not twDone and farmTw then pcall(function() farmTw:Cancel() end) end
+
+					if Client.Alive and Client.State.autoFarmGold and r.Parent and h.Health > 0 then
+						local trg = Engine.getChestTrigger()
+						if trg then
+							r.AssemblyLinearVelocity = Vector3.zero
+							ch:PivotTo(trg.CFrame + Vector3.new(0, 2, 0))
+							Engine.touchTrigger(r, trg)
+							task.wait(1.3)
+							Engine.claimGold()
+						end
+					end
+
+					Engine.stopFarmStabilizer()
+
+					local waitStart = os.clock()
+					while Client.Alive and Client.State.autoFarmGold and (os.clock() - waitStart) < 12 do
+						local curCh = localPlayer.Character
+						local curR = curCh and curCh:FindFirstChild("HumanoidRootPart")
+						local curH = curCh and curCh:FindFirstChildOfClass("Humanoid")
+						if curCh ~= ch and curR and curH and curH.Health > 0 and curR.Position.Z < 900 then
+							break
+						end
+						if curCh == ch and curR and curR.Position.Z < 900 and (os.clock() - waitStart) > 2 then
+							Engine.claimGold()
+							break
+						end
+						task.wait(0.35)
+					end
+					task.wait(0.6)
+				end
+			end)
+			if farmTw then pcall(function() farmTw:Cancel() end) end
+			Engine.stopFarmStabilizer()
+			Engine.applyWaterProtection(Client.State.walkOnWater)
+			Engine.farmBusy = false
+		end)
+	end
+
+	-- 8) Throttled Gold Telemetry, Target Sync, Water/Darkness & Auto-Chest Buy
+	if (now - Engine.lastGoldCheck) >= 0.6 then
+		Engine.lastGoldCheck = now
+		if Engine.goldStatsLabel and Engine.goldVal then
+			local curG = Engine.goldVal.Value
+			local gained = math.max(0, curG - Engine.startGold)
+			Engine.goldStatsLabel.Text = string.format("Золото: %d | За сессию: +%d", curG, gained)
+		end
+	end
+
+	if (now - Engine.lastTargetScan) >= 1.5 then
+		Engine.lastTargetScan = now
+		Engine.refreshTargetLabel(false)
+		if Client.State.walkOnWater and Engine.waterDeckParts then
+			for _, seg in ipairs(Engine.waterDeckParts) do
+				if seg and seg.Parent then seg.Color = th.neon end
+			end
+		end
+		if Client.State.hologramPreview and Engine.hologramFolder then
+			for _, gp in ipairs(Engine.hologramFolder:GetChildren()) do
+				if gp:IsA("BasePart") then gp.Color = th.neon end
+			end
+		end
+	end
+
+	if (now - Engine.lastEnvSync) >= 0.5 then
+		Engine.lastEnvSync = now
+		if Client.State.walkOnWater then Engine.applyWaterProtection(true) end
+		if Client.State.antiDarkness then Engine.applyAntiDarkness(true) end
+	end
+
+	if Client.State.autoBuyChest and (now - Engine.lastShopBuy) >= 1.25 then
+		Engine.lastShopBuy = now
+		local shopRem = workspace:FindFirstChild("ItemBoughtFromShop")
+		if shopRem then
+			task.spawn(function()
+				pcall(function() shopRem:InvokeServer(Client.State.chestType, 1) end)
+			end)
+		end
+	end
+
+end)
+
+Client.Bind(UserInputService.InputBegan, function(input, gp)
+	if not gp and input.KeyCode == Enum.KeyCode.RightShift then
+		backdrop.Visible = not backdrop.Visible
+		if not transitionedToGlass then
+			blurEffect.Enabled = backdrop.Visible
+		else
+			blurEffect.Enabled = false
+		end
+	end
+end)
